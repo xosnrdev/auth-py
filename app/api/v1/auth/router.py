@@ -95,6 +95,8 @@ async def register(
         verification_code_expires_at=verification_expires,
     )
     db.add(db_user)
+    await db.commit()
+    await db.refresh(db_user)
 
     # Log registration
     audit_log = AuditLog(
@@ -105,9 +107,7 @@ async def register(
         details="User registration",
     )
     db.add(audit_log)
-
     await db.commit()
-    await db.refresh(db_user)
 
     # Send verification email
     try:
