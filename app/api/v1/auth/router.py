@@ -1,4 +1,10 @@
-"""Authentication router for user registration and login."""
+"""Authentication router for user registration and login.
+
+Following RFCs:
+- RFC 6749: OAuth 2.0 Framework
+- RFC 9068: JWT Profile for OAuth 2.0 Access Tokens
+- RFC 6750: Bearer Token Usage
+"""
 
 from datetime import UTC, datetime
 from typing import Annotated
@@ -45,16 +51,44 @@ async def register(
 ) -> User:
     """Register a new user.
 
+    Creates a new user account with the provided email and password.
+    The password is hashed before storage.
+    An audit log entry is created for the registration.
+
     Args:
         request: FastAPI request object
         user_in: User registration data
         db: Database session
 
     Returns:
-        User: Created user
+        User: Created user object
 
     Raises:
-        HTTPException: If email already exists
+        HTTPException:
+            - 400: Email already registered
+
+    OpenAPI:
+        tags:
+          - auth
+        summary: Register new user
+        description: |
+            Create a new user account.
+            The password will be securely hashed.
+            An audit log entry will be created.
+        requestBody:
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/UserCreate'
+        responses:
+            201:
+                description: User successfully created
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UserResponse'
+            400:
+                description: Email already registered
     """
     # Check if email exists
     stmt = select(User).where(User.email == user_in.email)
@@ -97,7 +131,11 @@ async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: DBSession,
 ) -> TokenResponse:
-    """Login with username/password.
+    """OAuth2 compatible token login, get an access token for future requests.
+
+    Implements OAuth 2.0 password grant flow (RFC 6749 Section 4.3).
+    Returns a JWT access token (RFC 9068) and refresh token.
+    Creates an audit log entry for the login attempt.
 
     Args:
         request: FastAPI request object
@@ -105,10 +143,53 @@ async def login(
         db: Database session
 
     Returns:
-        TokenResponse: Access and refresh tokens
+        TokenResponse: Access and refresh tokens with expiration times
 
     Raises:
-        HTTPException: If credentials are invalid
+        HTTPException:
+            - 401: Invalid credentials
+            - 403: Inactive user
+
+    Security:
+        - Access token is a JWT following RFC 9068
+        - Refresh token is stored in database for revocation
+        - Implements OAuth 2.0 password grant (RFC 6749)
+        - Uses asymmetric signing (RS256)
+
+    OpenAPI:
+        tags:
+          - auth
+        summary: OAuth2 password grant token endpoint
+        description: |
+            Authenticate user and receive access and refresh tokens.
+            The access token is a JWT that must be sent in the Authorization header.
+            The refresh token can be used to obtain new access tokens.
+        requestBody:
+            content:
+                application/x-www-form-urlencoded:
+                    schema:
+                        required:
+                            - username
+                            - password
+                        properties:
+                            username:
+                                type: string
+                                description: User's email address
+                            password:
+                                type: string
+                                format: password
+                                description: User's password
+        responses:
+            200:
+                description: Successful authentication
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/TokenResponse'
+            401:
+                description: Invalid credentials
+            403:
+                description: Inactive user
     """
     # Get user by email
     stmt = select(User).where(User.email == form_data.username)
@@ -151,11 +232,10 @@ async def login(
 
     await db.commit()
 
-    # Return both tokens but don't expose database fields
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
-        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,  # Convert to seconds
+        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         refresh_token=refresh_token,
         expires_at=refresh_exp,
     )
@@ -167,12 +247,36 @@ async def logout(
     user: CurrentUser,
     db: DBSession,
 ) -> None:
-    """Logout current user.
+    """Logout current user by revoking all refresh tokens.
+
+    Implements token revocation (RFC 7009).
+    Creates an audit log entry for the logout.
 
     Args:
         request: FastAPI request object
         user: Current authenticated user
         db: Database session
+
+    Security:
+        - Requires valid access token
+        - Revokes all refresh tokens
+        - Audit logged
+
+    OpenAPI:
+        tags:
+          - auth
+        summary: Logout current user
+        description: |
+            Revoke all refresh tokens for the current user.
+            The access token will remain valid until expiration.
+            An audit log entry will be created.
+        security:
+            - BearerAuth: []
+        responses:
+            204:
+                description: Successfully logged out
+            401:
+                description: Invalid or missing token
     """
     # Revoke all user's refresh tokens
     stmt = (
@@ -197,12 +301,34 @@ async def logout(
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user(user: CurrentUser) -> User:
-    """Get current user data.
+    """Get current authenticated user data.
 
     Args:
-        user: Current authenticated user
+        user: Current authenticated user from bearer token
 
     Returns:
         User: Current user data
+
+    Security:
+        - Requires valid access token
+
+    OpenAPI:
+        tags:
+          - auth
+        summary: Get current user
+        description: |
+            Get the profile of the currently authenticated user.
+            Requires a valid access token.
+        security:
+            - BearerAuth: []
+        responses:
+            200:
+                description: Current user profile
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/UserResponse'
+            401:
+                description: Invalid or missing token
     """
     return user
