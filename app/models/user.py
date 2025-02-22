@@ -1,14 +1,15 @@
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, String, Text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy import Boolean, DateTime, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
 
 class User(Base):
-    """User model for authentication and authorization."""
+    """User model for authentication."""
 
     __tablename__ = "users"
 
@@ -47,11 +48,15 @@ class User(Base):
         server_default="true",
     )
 
-    # Authorization fields
-    roles: Mapped[list[str]] = mapped_column(
-        ARRAY(String),
-        nullable=False,
-        server_default="{user}",
+    # Email verification
+    verification_code: Mapped[str | None] = mapped_column(
+        String(32),  # Store verification code
+        nullable=True,
+        index=True,
+    )
+    verification_code_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
     def __repr__(self) -> str:

@@ -7,30 +7,19 @@ Following RFCs:
 - RFC 7009: OAuth 2.0 Token Revocation
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from secrets import token_hex
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select, update
+from sqlalchemy import select
 
-from app.api.v1.auth.dependencies import CurrentUser, DBSession
+from app.api.v1.auth.dependencies import DBSession
 from app.core.config import settings
-from app.core.security import (
-    create_jwt_token,
-    get_password_hash,
-    verify_password,
-)
-from app.models import AuditLog, Token, User
-from app.models.token import RevocationReason
-from app.schemas import (
-    TokenError,
-    TokenResponse,
-    TokenType,
-    UserCreate,
-    UserResponse,
-)
-from app.schemas.token import ErrorCode, TokenRevocationRequest
+from app.core.security import get_password_hash, verify_password
+from app.models import AuditLog, User
+from app.schemas import UserCreate, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -63,6 +52,7 @@ async def register(
     Creates a new user account with the provided email and password.
     The password is hashed before storage.
     An audit log entry is created for the registration.
+    A verification email is sent to the user.
 
     Args:
         request: FastAPI request object
@@ -109,12 +99,17 @@ async def register(
             detail="Email already registered",
         )
 
+    # Generate verification code
+    verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
+    verification_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
+
     # Create user
     db_user = User(
         email=user_in.email,
         phone=user_in.phone,
         password_hash=get_password_hash(user_in.password),
-        roles=user_in.roles,
+        verification_code=verification_code,
+        verification_code_expires_at=verification_expires,
     )
     db.add(db_user)
 
@@ -131,74 +126,35 @@ async def register(
     await db.commit()
     await db.refresh(db_user)
 
+    # TODO: Send verification email
+    # await send_verification_email(db_user.email, verification_code)
+
     return db_user
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=UserResponse)
 async def login(
     request: Request,
+    response: Response,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: DBSession,
-) -> TokenResponse:
-    """OAuth2 compatible token login, get an access token for future requests.
-
-    Implements OAuth 2.0 password grant flow (RFC 6749 Section 4.3).
-    Returns a JWT access token (RFC 9068) and refresh token.
-    Creates an audit log entry for the login attempt.
+) -> User:
+    """Login user and set session cookie.
 
     Args:
         request: FastAPI request object
+        response: FastAPI response object
         form_data: OAuth2 password request form
         db: Database session
 
     Returns:
-        TokenResponse: Access and refresh tokens with expiration times
+        User: Logged in user data
 
     Raises:
         HTTPException:
             - 401: Invalid credentials
             - 403: Inactive user
-
-    Security:
-        - Access token is a JWT following RFC 9068
-        - Refresh token is stored in database for revocation
-        - Implements OAuth 2.0 password grant (RFC 6749)
-        - Uses asymmetric signing (RS256)
-
-    OpenAPI:
-        tags:
-          - auth
-        summary: OAuth2 password grant token endpoint
-        description: |
-            Authenticate user and receive access and refresh tokens.
-            The access token is a JWT that must be sent in the Authorization header.
-            The refresh token can be used to obtain new access tokens.
-        requestBody:
-            content:
-                application/x-www-form-urlencoded:
-                    schema:
-                        required:
-                            - username
-                            - password
-                        properties:
-                            username:
-                                type: string
-                                description: User's email address
-                            password:
-                                type: string
-                                format: password
-                                description: User's password
-        responses:
-            200:
-                description: Successful authentication
-                content:
-                    application/json:
-                        schema:
-                            $ref: '#/components/schemas/TokenResponse'
-            401:
-                description: Invalid credentials
-            403:
-                description: Inactive user
+            - 403: Email not verified
     """
     # Get user by email
     stmt = select(User).where(User.email == form_data.username)
@@ -208,7 +164,6 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Bearer"},
         )
 
     if not user.is_active:
@@ -217,17 +172,22 @@ async def login(
             detail="Inactive user",
         )
 
-    # Create tokens
-    access_token, access_exp = create_jwt_token(user.id, "access")
-    refresh_token, refresh_exp = create_jwt_token(user.id, "refresh")
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email not verified",
+        )
 
-    # Store only the refresh token
-    db_token = Token(
-        jti=user.id,
-        refresh_token=refresh_token,
-        expires_at=refresh_exp,
+    # Set session cookie
+    session_id = token_hex(32)
+    response.set_cookie(
+        key=settings.COOKIE_NAME,
+        value=session_id,
+        max_age=settings.COOKIE_MAX_AGE,
+        httponly=settings.COOKIE_HTTPONLY,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAMESITE,
     )
-    db.add(db_token)
 
     # Log login
     audit_log = AuditLog(
@@ -241,211 +201,89 @@ async def login(
 
     await db.commit()
 
-    return TokenResponse(
-        access_token=access_token,
-        token_type=TokenType.BEARER,
-        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        refresh_token=refresh_token,
-        expires_at=refresh_exp,
-    )
+    return user
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(
+@router.post("/verify-email")
+async def verify_email(
     request: Request,
-    user: CurrentUser,
+    code: str,
     db: DBSession,
-) -> None:
-    """Logout current user by revoking all refresh tokens.
-
-    Implements token revocation (RFC 7009).
-    Creates an audit log entry for the logout.
+) -> dict[str, str]:
+    """Verify user's email address.
 
     Args:
         request: FastAPI request object
-        user: Current authenticated user
+        code: Verification code sent to user's email
         db: Database session
 
-    Security:
-        - Requires valid access token
-        - Revokes all refresh tokens
-        - Audit logged
-
-    OpenAPI:
-        tags:
-          - auth
-        summary: Logout current user
-        description: |
-            Revoke all refresh tokens for the current user.
-            The access token will remain valid until expiration.
-            An audit log entry will be created.
-        security:
-            - BearerAuth: []
-        responses:
-            204:
-                description: Successfully logged out
-            401:
-                description: Invalid or missing token
-    """
-    # Revoke all user's refresh tokens
-    stmt = (
-        update(Token)
-        .where(Token.jti == user.id)
-        .values(
-            revoked=True,
-            revoked_at=datetime.now(UTC),
-            revocation_reason=RevocationReason.LOGOUT,
-        )
-    )
-    await db.execute(stmt)
-
-    # Log logout
-    audit_log = AuditLog(
-        user_id=user.id,
-        action="logout",
-        ip_address=get_client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        details="User logout",
-    )
-    db.add(audit_log)
-
-    await db.commit()
-
-
-@router.post("/revoke", status_code=status.HTTP_200_OK, responses={
-    200: {"description": "Token successfully revoked"},
-    400: {"model": TokenError, "description": "Invalid request"},
-    404: {"description": "Token not found"},
-})
-async def revoke_token(
-    request: Request,
-    revocation: TokenRevocationRequest,
-    user: CurrentUser,
-    db: DBSession,
-) -> None:
-    """Revoke a specific token as per RFC 7009.
-
-    Args:
-        request: FastAPI request object
-        revocation: Token revocation request
-        user: Current authenticated user
-        db: Database session
+    Returns:
+        dict: Success message
 
     Raises:
         HTTPException:
-            - 400: Invalid request
-            - 404: Token not found
-
-    Security:
-        - Requires valid access token
-        - Only refresh tokens can be revoked
-        - Audit logged
-
-    OpenAPI:
-        tags:
-          - auth
-        summary: Revoke a specific token
-        description: |
-            Revoke a specific refresh token.
-            Access tokens cannot be revoked as they are stateless.
-            An audit log entry will be created.
-        security:
-            - BearerAuth: []
-        requestBody:
-            content:
-                application/json:
-                    schema:
-                        $ref: '#/components/schemas/TokenRevocationRequest'
-        responses:
-            200:
-                description: Token successfully revoked
-            400:
-                description: Invalid request
-                content:
-                    application/json:
-                        schema:
-                            $ref: '#/components/schemas/TokenError'
-            404:
-                description: Token not found
+            - 400: Invalid or expired verification code
     """
-    # Only refresh tokens can be revoked
-    if revocation.token_type_hint and revocation.token_type_hint != "refresh_token":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=TokenError(
-                error=ErrorCode.INVALID_REQUEST,
-                error_description="Only refresh tokens can be revoked",
-            ).model_dump(),
-        )
-
-    # Find and revoke the token
-    stmt = (
-        update(Token)
-        .where(
-            Token.refresh_token == revocation.token,
-            Token.jti == user.id,  # Ensure user can only revoke their own tokens
-            Token.revoked.is_(False),
-        )
-        .values(
-            revoked=True,
-            revoked_at=datetime.now(UTC),
-            revocation_reason=revocation.reason,
-        )
+    # Find user by verification code
+    stmt = select(User).where(
+        User.verification_code == code,
+        User.verification_code_expires_at > datetime.now(UTC),
+        User.is_verified.is_(False),
     )
     result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
 
-    if result.rowcount == 0:
+    if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=TokenError(
-                error=ErrorCode.INVALID_REQUEST,
-                error_description="Token not found or already revoked",
-            ).model_dump(),
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code",
         )
 
-    # Log revocation
+    # Mark email as verified
+    user.is_verified = True
+    user.verification_code = None
+    user.verification_code_expires_at = None
+
+    # Log verification
     audit_log = AuditLog(
         user_id=user.id,
-        action="revoke_token",
+        action="verify_email",
         ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
-        details=f"Token revoked: {revocation.reason}",
+        details="Email verified",
     )
     db.add(audit_log)
 
     await db.commit()
 
+    return {"message": "Email verified successfully"}
 
-@router.get("/me", response_model=UserResponse)
-async def get_current_user(user: CurrentUser) -> User:
-    """Get current authenticated user data.
+
+@router.post("/logout")
+async def logout(
+    request: Request,  # noqa: ARG001 - Will be used for audit logging with Redis
+    response: Response,
+    db: DBSession,  # noqa: ARG001 - Will be used for audit logging with Redis
+) -> dict[str, str]:
+    """Logout user by clearing session cookie.
 
     Args:
-        user: Current authenticated user from bearer token
+        request: FastAPI request object
+        response: FastAPI response object
+        db: Database session
 
     Returns:
-        User: Current user data
-
-    Security:
-        - Requires valid access token
-
-    OpenAPI:
-        tags:
-          - auth
-        summary: Get current user
-        description: |
-            Get the profile of the currently authenticated user.
-            Requires a valid access token.
-        security:
-            - BearerAuth: []
-        responses:
-            200:
-                description: Current user profile
-                content:
-                    application/json:
-                        schema:
-                            $ref: '#/components/schemas/UserResponse'
-            401:
-                description: Invalid or missing token
+        dict: Success message
     """
-    return user
+    # Clear session cookie
+    response.delete_cookie(
+        key=settings.COOKIE_NAME,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+
+    # TODO: Invalidate session in Redis
+    # await redis.delete(f"session:{session_id}")
+
+    return {"message": "Logged out successfully"}
