@@ -1,7 +1,14 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, RedisDsn, ValidationInfo, field_validator
+from pydantic import (
+    Field,
+    PostgresDsn,
+    RedisDsn,
+    SecretStr,
+    ValidationInfo,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,16 +35,56 @@ class Settings(BaseSettings):
         examples=["/verify-email", "/auth/verify"],
     )
 
+    # JWT settings
+    JWT_SECRET: str = Field(
+        default=...,  # Required
+        description="Secret key for JWT signing",
+    )
+    JWT_ACCESS_TOKEN_EXPIRES_SECS: int = Field(
+        default=15 * 60,  # 15 minutes in seconds
+        description="Access token expiration time in seconds",
+    )
+    JWT_REFRESH_TOKEN_EXPIRES_SECS: int = Field(
+        default=7 * 24 * 60 * 60,  # 7 days in seconds
+        description="Refresh token expiration time in seconds",
+    )
+
+    # OAuth2 settings
+    GOOGLE_CLIENT_ID: str = Field(
+        default=...,  # Required
+        description="Google OAuth2 client ID",
+    )
+    GOOGLE_CLIENT_SECRET: SecretStr = Field(
+        default=...,  # Required
+        description="Google OAuth2 client secret",
+    )
+    APPLE_CLIENT_ID: str = Field(
+        default=...,  # Required
+        description="Apple OAuth2 client ID (Services ID)",
+    )
+    APPLE_CLIENT_SECRET: SecretStr = Field(
+        default=...,  # Required
+        description="Apple OAuth2 client secret (Private Key)",
+    )
+    APPLE_TEAM_ID: str = Field(
+        default=...,  # Required
+        description="Apple Developer Team ID",
+    )
+    APPLE_KEY_ID: str = Field(
+        default=...,  # Required
+        description="Apple Private Key ID",
+    )
+
     # Database settings
     DATABASE_URI: PostgresDsn = Field(
-        default=...,  # Ellipsis means the field is required
+        default=...,  # Required
         description="PostgreSQL database URI",
         examples=["postgresql+asyncpg://user:pass@localhost:5432/dbname"],
     )
 
     # Redis settings
     REDIS_URI: RedisDsn = Field(
-        default=...,  # Ellipsis means the field is required
+        default=...,  # Required
         description="Redis URI for caching and session management",
         examples=["redis://localhost:6379"],
     )
@@ -68,7 +115,7 @@ class Settings(BaseSettings):
         default="session",
         description="Name of the session cookie",
     )
-    COOKIE_MAX_AGE: int = Field(
+    COOKIE_MAX_AGE_SECS: int = Field(
         default=14 * 24 * 60 * 60,  # 14 days in seconds
         description="Maximum age of the session cookie in seconds",
     )

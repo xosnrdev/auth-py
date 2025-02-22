@@ -8,14 +8,24 @@ dependencies = [
     "aiosmtplib>=4.0.0",
     "alembic>=1.14.1",
     "asyncpg>=0.30.0",
+    "authlib>=1.4.1",
+    "cryptography>=44.0.1",
     "fastapi[standard]>=0.115.8",
     "pydantic-settings>=2.8.0",
+    "python-jose[cryptography]>=3.4.0",
     "redis[hiredis]>=5.2.1",
     "sqlalchemy[asyncio]>=2.0.38",
 ]
 
 [dependency-groups]
-dev = ["coverage>=7.6.12", "mypy>=1.15.0", "pytest>=8.3.4", "ruff>=0.9.7"]
+dev = [
+    "coverage>=7.6.12",
+    "mypy>=1.15.0",
+    "pytest>=8.3.4",
+    "ruff>=0.9.7",
+    "types-authlib>=1.4.0.20241230",
+    "types-python-jose>=3.3.4.20240106",
+]
 
 [build-system]
 requires = ["hatchling"]

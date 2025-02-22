@@ -50,4 +50,4 @@ class AuditLog(Base):
 
     def __repr__(self) -> str:
         """String representation of AuditLog model."""
-        return f"<AuditLog {self.action} by {self.user_id}>"
+        return f"<AuditLog {self.action} by {self.user_id.hex}>"

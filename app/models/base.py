@@ -28,5 +28,16 @@ class Base(DeclarativeBase):
     )
 
     def dict(self) -> dict[str, Any]:
-        """Convert model to dictionary."""
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        """Convert model to dictionary.
+
+        Returns:
+            dict[str, Any]: Dictionary representation of model with UUIDs as hex strings
+        """
+        result = {}
+        for c in self.__table__.columns:
+            value = getattr(self, c.name)
+            if isinstance(value, UUID):
+                result[c.name] = value.hex
+            else:
+                result[c.name] = value
+        return result

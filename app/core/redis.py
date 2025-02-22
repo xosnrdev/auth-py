@@ -1,4 +1,4 @@
-"""Redis client for session management."""
+"""Redis client for token revocation and rate limiting."""
 
 from typing import cast
 
@@ -31,43 +31,3 @@ async def close_redis() -> None:
     This should be called during application shutdown.
     """
     await redis.close()
-
-
-async def set_session(
-    session_id: str,
-    user_id: str,
-    expires_in: int = settings.COOKIE_MAX_AGE,
-) -> None:
-    """Store session data in Redis.
-
-    Args:
-        session_id: Unique session identifier
-        user_id: User ID associated with the session
-        expires_in: Session expiration time in seconds
-    """
-    key = f"session:{session_id}"
-    await redis.set(key, user_id, ex=expires_in)
-
-
-async def get_session(session_id: str) -> str | None:
-    """Get user ID from session.
-
-    Args:
-        session_id: Session identifier
-
-    Returns:
-        str | None: User ID if session exists and is valid
-    """
-    key = f"session:{session_id}"
-    result = await redis.get(key)
-    return cast(str | None, result)
-
-
-async def delete_session(session_id: str) -> None:
-    """Delete a session from Redis.
-
-    Args:
-        session_id: Session identifier to delete
-    """
-    key = f"session:{session_id}"
-    await redis.delete(key)

@@ -19,7 +19,7 @@ from sqlalchemy import select
 from app.api.v1.auth.dependencies import DBSession
 from app.core import email_service
 from app.core.config import settings
-from app.core.redis import delete_session, set_session
+from app.core.jwt import TokenResponse, token_service
 from app.core.security import get_password_hash, verify_password
 from app.models import AuditLog, User
 from app.schemas import UserCreate, UserResponse
@@ -132,14 +132,20 @@ async def register(
     return db_user
 
 
-@router.post("/login", response_model=UserResponse)
+@router.post("/login", response_model=UserResponse | TokenResponse)
 async def login(
     request: Request,
     response: Response,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: DBSession,
-) -> User:
-    """Login user and set session cookie.
+) -> UserResponse | TokenResponse:
+    """Login user and create tokens.
+
+    For web clients (browser), sets refresh token in HTTP-only cookie
+    and returns user data.
+
+    For API clients (mobile/desktop), returns both access and refresh tokens
+    in JSON response.
 
     Args:
         request: FastAPI request object
@@ -148,7 +154,7 @@ async def login(
         db: Database session
 
     Returns:
-        User: Logged in user data
+        UserResponse | TokenResponse: User data for web clients, tokens for API clients
 
     Raises:
         HTTPException:
@@ -178,16 +184,13 @@ async def login(
             detail="Email not verified",
         )
 
-    # Set session cookie and store in Redis
-    session_id = token_hex(32)
-    await set_session(session_id, str(user.id))
-    response.set_cookie(
-        key=settings.COOKIE_NAME,
-        value=session_id,
-        max_age=settings.COOKIE_MAX_AGE,
-        httponly=settings.COOKIE_HTTPONLY,
-        secure=settings.COOKIE_SECURE,
-        samesite=settings.COOKIE_SAMESITE,
+    # Detect client type from Accept header
+    wants_json = "application/json" in request.headers.get("accept", "")
+
+    # Create tokens based on client type
+    tokens = await token_service.create_tokens(
+        user_id=user.id,
+        response=None if wants_json else response,
     )
 
     # Log login
@@ -199,10 +202,12 @@ async def login(
         details="User login",
     )
     db.add(audit_log)
-
     await db.commit()
 
-    return user
+    # Return tokens for API clients, user data for web clients
+    if wants_json and tokens:
+        return tokens
+    return UserResponse.model_validate(user)
 
 
 @router.post("/verify-email")
@@ -263,27 +268,33 @@ async def verify_email(
 @router.post("/logout", status_code=status.HTTP_200_OK)
 async def logout(
     response: Response,
-    session: str | None = Cookie(None, alias="session"),
+    refresh_token: str | None = Cookie(None, alias=settings.COOKIE_NAME),
 ) -> dict[str, str]:
-    """Logout user by clearing session cookie.
+    """Logout user by revoking refresh token.
+
+    For web clients, also clears the refresh token cookie.
+    For API clients, expects the refresh token to be passed in request body.
 
     Args:
         response: FastAPI response object
-        session: Session cookie value
+        refresh_token: Refresh token from cookie or request body
 
     Returns:
         dict: Success message
     """
-    if session:
-        # Delete session from Redis
-        await delete_session(session)
+    if refresh_token:
+        # Revoke refresh token
+        try:
+            await token_service.revoke_token(refresh_token)
+        except Exception as e:
+            logger.warning("Failed to revoke token: %s", str(e))
 
-    # Clear session cookie
-    response.delete_cookie(
-        key=settings.COOKIE_NAME,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-    )
+        # Clear cookie for web clients
+        response.delete_cookie(
+            key=settings.COOKIE_NAME,
+            httponly=settings.COOKIE_HTTPONLY,
+            secure=settings.COOKIE_SECURE,
+            samesite=settings.COOKIE_SAMESITE,
+        )
 
     return {"message": "Logged out successfully"}
