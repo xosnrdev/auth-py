@@ -5,9 +5,11 @@ from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
+from sqlalchemy.sql import text
 
 from app.core.config import settings
 from app.models import Base
+from app.models.token import RevocationReason
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -72,6 +74,11 @@ async def run_async_migrations() -> None:
     )
 
     async with connectable.connect() as connection:
+        # Create enum type first
+        await connection.execute(text("DROP TYPE IF EXISTS revocationreason"))
+        values = tuple(e.value for e in RevocationReason)
+        await connection.execute(text(f"CREATE TYPE revocationreason AS ENUM {values}"))
+        # Run migrations
         await connection.run_sync(do_run_migrations)
 
     await connectable.dispose()

@@ -4,6 +4,7 @@ Following RFCs:
 - RFC 6749: OAuth 2.0 Framework
 - RFC 9068: JWT Profile for OAuth 2.0 Access Tokens
 - RFC 6750: Bearer Token Usage
+- RFC 7009: OAuth 2.0 Token Revocation
 """
 
 from datetime import UTC, datetime
@@ -21,7 +22,15 @@ from app.core.security import (
     verify_password,
 )
 from app.models import AuditLog, Token, User
-from app.schemas import TokenResponse, UserCreate, UserResponse
+from app.models.token import RevocationReason
+from app.schemas import (
+    TokenError,
+    TokenResponse,
+    TokenType,
+    UserCreate,
+    UserResponse,
+)
+from app.schemas.token import ErrorCode, TokenRevocationRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -234,7 +243,7 @@ async def login(
 
     return TokenResponse(
         access_token=access_token,
-        token_type="bearer",
+        token_type=TokenType.BEARER,
         expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         refresh_token=refresh_token,
         expires_at=refresh_exp,
@@ -282,7 +291,11 @@ async def logout(
     stmt = (
         update(Token)
         .where(Token.jti == user.id)
-        .values(revoked=True, expires_at=datetime.now(UTC))
+        .values(
+            revoked=True,
+            revoked_at=datetime.now(UTC),
+            revocation_reason=RevocationReason.LOGOUT,
+        )
     )
     await db.execute(stmt)
 
@@ -293,6 +306,110 @@ async def logout(
         ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
         details="User logout",
+    )
+    db.add(audit_log)
+
+    await db.commit()
+
+
+@router.post("/revoke", status_code=status.HTTP_200_OK, responses={
+    200: {"description": "Token successfully revoked"},
+    400: {"model": TokenError, "description": "Invalid request"},
+    404: {"description": "Token not found"},
+})
+async def revoke_token(
+    request: Request,
+    revocation: TokenRevocationRequest,
+    user: CurrentUser,
+    db: DBSession,
+) -> None:
+    """Revoke a specific token as per RFC 7009.
+
+    Args:
+        request: FastAPI request object
+        revocation: Token revocation request
+        user: Current authenticated user
+        db: Database session
+
+    Raises:
+        HTTPException:
+            - 400: Invalid request
+            - 404: Token not found
+
+    Security:
+        - Requires valid access token
+        - Only refresh tokens can be revoked
+        - Audit logged
+
+    OpenAPI:
+        tags:
+          - auth
+        summary: Revoke a specific token
+        description: |
+            Revoke a specific refresh token.
+            Access tokens cannot be revoked as they are stateless.
+            An audit log entry will be created.
+        security:
+            - BearerAuth: []
+        requestBody:
+            content:
+                application/json:
+                    schema:
+                        $ref: '#/components/schemas/TokenRevocationRequest'
+        responses:
+            200:
+                description: Token successfully revoked
+            400:
+                description: Invalid request
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/TokenError'
+            404:
+                description: Token not found
+    """
+    # Only refresh tokens can be revoked
+    if revocation.token_type_hint and revocation.token_type_hint != "refresh_token":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=TokenError(
+                error=ErrorCode.INVALID_REQUEST,
+                error_description="Only refresh tokens can be revoked",
+            ).model_dump(),
+        )
+
+    # Find and revoke the token
+    stmt = (
+        update(Token)
+        .where(
+            Token.refresh_token == revocation.token,
+            Token.jti == user.id,  # Ensure user can only revoke their own tokens
+            Token.revoked.is_(False),
+        )
+        .values(
+            revoked=True,
+            revoked_at=datetime.now(UTC),
+            revocation_reason=revocation.reason,
+        )
+    )
+    result = await db.execute(stmt)
+
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=TokenError(
+                error=ErrorCode.INVALID_REQUEST,
+                error_description="Token not found or already revoked",
+            ).model_dump(),
+        )
+
+    # Log revocation
+    audit_log = AuditLog(
+        user_id=user.id,
+        action="revoke_token",
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        details=f"Token revoked: {revocation.reason}",
     )
     db.add(audit_log)
 
