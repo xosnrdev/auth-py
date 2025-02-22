@@ -1,3 +1,5 @@
+"""Token model for JWT token management."""
+
 from datetime import datetime
 from uuid import UUID
 
@@ -8,7 +10,12 @@ from app.models.base import Base
 
 
 class Token(Base):
-    """Token model for JWT token management."""
+    """Token model for refresh token management.
+
+    Note: Access tokens are not stored as they are stateless JWTs that can be
+    validated using the public key. Only refresh tokens are stored for revocation
+    and rotation purposes.
+    """
 
     __tablename__ = "tokens"
 
@@ -17,10 +24,6 @@ class Token(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
-    )
-    access_token: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
     )
     refresh_token: Mapped[str] = mapped_column(
         Text,
