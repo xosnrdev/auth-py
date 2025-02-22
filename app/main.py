@@ -4,7 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.db.base import Base, engine
+from app.db.base import engine
+from app.models import Base
 
 
 @asynccontextmanager
