@@ -5,10 +5,12 @@ description = "RFC IETF Compliant Authentication Service"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "aiosmtplib>=4.0.0",
     "alembic>=1.14.1",
     "asyncpg>=0.30.0",
     "fastapi[standard]>=0.115.8",
     "pydantic-settings>=2.8.0",
+    "redis[hiredis]>=5.2.1",
     "sqlalchemy[asyncio]>=2.0.38",
 ]
 

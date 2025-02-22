@@ -7,19 +7,24 @@ Following RFCs:
 - RFC 7009: OAuth 2.0 Token Revocation
 """
 
+import logging
 from datetime import UTC, datetime, timedelta
 from secrets import token_hex
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 
 from app.api.v1.auth.dependencies import DBSession
+from app.core import email_service
 from app.core.config import settings
+from app.core.redis import delete_session, set_session
 from app.core.security import get_password_hash, verify_password
 from app.models import AuditLog, User
 from app.schemas import UserCreate, UserResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -65,29 +70,7 @@ async def register(
     Raises:
         HTTPException:
             - 400: Email already registered
-
-    OpenAPI:
-        tags:
-          - auth
-        summary: Register new user
-        description: |
-            Create a new user account.
-            The password will be securely hashed.
-            An audit log entry will be created.
-        requestBody:
-            content:
-                application/json:
-                    schema:
-                        $ref: '#/components/schemas/UserCreate'
-        responses:
-            201:
-                description: User successfully created
-                content:
-                    application/json:
-                        schema:
-                            $ref: '#/components/schemas/UserResponse'
-            400:
-                description: Email already registered
+            - 500: Failed to send verification email
     """
     # Check if email exists
     stmt = select(User).where(User.email == user_in.email)
@@ -126,8 +109,25 @@ async def register(
     await db.commit()
     await db.refresh(db_user)
 
-    # TODO: Send verification email
-    # await send_verification_email(db_user.email, verification_code)
+    # Send verification email
+    try:
+        await email_service.send_verification_email(
+            to_email=user_in.email,
+            verification_code=verification_code,
+        )
+    except Exception as e:
+        # Log error but don't fail registration
+        logger.error("Failed to send verification email: %s", str(e))
+        # Create error audit log
+        error_log = AuditLog(
+            user_id=db_user.id,
+            action="send_verification_email",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            details=f"Failed to send verification email: {str(e)}",
+        )
+        db.add(error_log)
+        await db.commit()
 
     return db_user
 
@@ -178,8 +178,9 @@ async def login(
             detail="Email not verified",
         )
 
-    # Set session cookie
+    # Set session cookie and store in Redis
     session_id = token_hex(32)
+    await set_session(session_id, str(user.id))
     response.set_cookie(
         key=settings.COOKIE_NAME,
         value=session_id,
@@ -259,22 +260,24 @@ async def verify_email(
     return {"message": "Email verified successfully"}
 
 
-@router.post("/logout")
+@router.post("/logout", status_code=status.HTTP_200_OK)
 async def logout(
-    request: Request,  # noqa: ARG001 - Will be used for audit logging with Redis
     response: Response,
-    db: DBSession,  # noqa: ARG001 - Will be used for audit logging with Redis
+    session: str | None = Cookie(None, alias="session"),
 ) -> dict[str, str]:
     """Logout user by clearing session cookie.
 
     Args:
-        request: FastAPI request object
         response: FastAPI response object
-        db: Database session
+        session: Session cookie value
 
     Returns:
         dict: Success message
     """
+    if session:
+        # Delete session from Redis
+        await delete_session(session)
+
     # Clear session cookie
     response.delete_cookie(
         key=settings.COOKIE_NAME,
@@ -282,8 +285,5 @@ async def logout(
         secure=True,
         samesite="lax",
     )
-
-    # TODO: Invalidate session in Redis
-    # await redis.delete(f"session:{session_id}")
 
     return {"message": "Logged out successfully"}

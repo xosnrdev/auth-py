@@ -7,22 +7,36 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.v1 import router as api_v1_router
 from app.core.config import settings
+from app.core.redis import close_redis, init_redis
 from app.db.base import engine
 from app.models import Base
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-    # Startup: create database tables
-    async with engine.begin() as conn:
-        # await conn.run_sync(Base.metadata.drop_all)  # Uncomment to reset DB
-        await conn.run_sync(Base.metadata.create_all)
+    """Lifespan context manager for FastAPI application.
 
-    yield
+    Handles startup and shutdown events:
+    - Database initialization
+    - Redis connection setup
+    """
+    # Startup
+    try:
+        # Initialize database
+        async with engine.begin() as conn:
+            # await conn.run_sync(Base.metadata.drop_all)  # Uncomment to reset DB
+            await conn.run_sync(Base.metadata.create_all)
 
-    # Shutdown: close database connections
-    if isinstance(engine, AsyncEngine):
-        await engine.dispose()
+        # Initialize Redis
+        await init_redis()
+
+        yield
+
+    finally:
+        # Shutdown
+        if isinstance(engine, AsyncEngine):
+            await engine.dispose()
+        await close_redis()
 
 
 app = FastAPI(
@@ -47,4 +61,5 @@ app.include_router(api_v1_router, prefix="/api")
 
 @app.get("/")
 async def read_root() -> dict[str, str]:
-    return {"message": "Hello World"}
+    """Root endpoint for health checks."""
+    return {"message": "Authentication Service is running"}

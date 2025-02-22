@@ -1,11 +1,13 @@
 """Dependencies for authentication endpoints."""
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.redis import get_session
 from app.db.base import get_db
 from app.models import User
 
@@ -35,16 +37,19 @@ async def get_current_user(
             detail="Not authenticated",
         )
 
-    # TODO: Get user ID from Redis session
-    # user_id = await redis.get(f"session:{session}")
-    # if not user_id:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_401_UNAUTHORIZED,
-    #         detail="Session expired",
-    #     )
+    # Get user ID from Redis session
+    user_id = await get_session(session)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session expired",
+        )
 
     # Get user from database
-    stmt = select(User).where(User.is_active.is_(True))
+    stmt = select(User).where(
+        User.id == UUID(user_id),
+        User.is_active.is_(True),
+    )
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
     if not user:

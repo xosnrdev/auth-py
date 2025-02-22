@@ -16,6 +16,18 @@ class Settings(BaseSettings):
         validate_default=True,
     )
 
+    # Application settings
+    APP_URL: str = Field(
+        default="http://localhost:3000",
+        description="Base URL of the frontend application",
+        examples=["http://localhost:3000", "https://example.com"],
+    )
+    VERIFICATION_URL_PATH: str = Field(
+        default="/verify-email",
+        description="Path for email verification",
+        examples=["/verify-email", "/auth/verify"],
+    )
+
     # Database settings
     DATABASE_URI: PostgresDsn = Field(
         default=...,  # Ellipsis means the field is required
