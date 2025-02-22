@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.v1 import router as api_v1_router
 from app.core.config import settings
+from app.core.middleware import RateLimitMiddleware
 from app.core.redis import close_redis, init_redis
 from app.db.base import engine
 from app.models import Base
@@ -45,6 +46,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Rate limiting middleware (5 requests/IP/minute)
+app.add_middleware(RateLimitMiddleware)
 
 # CORS middleware
 app.add_middleware(

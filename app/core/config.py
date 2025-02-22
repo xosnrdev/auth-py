@@ -35,6 +35,18 @@ class Settings(BaseSettings):
         examples=["/verify-email", "/auth/verify"],
     )
 
+    # Rate limiting settings
+    RATE_LIMIT_REQUESTS: int = Field(
+        default=5,
+        description="Maximum number of requests per window",
+        gt=0,
+    )
+    RATE_LIMIT_WINDOW_SECS: int = Field(
+        default=60,  # 1 minute
+        description="Rate limit window in seconds",
+        gt=0,
+    )
+
     # JWT settings
     JWT_SECRET: str = Field(
         default=...,  # Required
