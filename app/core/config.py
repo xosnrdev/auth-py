@@ -1,5 +1,4 @@
 from functools import lru_cache
-from typing import Literal
 
 from pydantic import (
     Field,
@@ -123,25 +122,9 @@ class Settings(BaseSettings):
     )
 
     # Cookie settings
-    COOKIE_NAME: str = Field(
-        default="session",
-        description="Name of the session cookie",
-    )
     COOKIE_MAX_AGE_SECS: int = Field(
         default=14 * 24 * 60 * 60,  # 14 days in seconds
         description="Maximum age of the session cookie in seconds",
-    )
-    COOKIE_SECURE: bool = Field(
-        default=True,
-        description="Only send cookie over HTTPS",
-    )
-    COOKIE_HTTPONLY: bool = Field(
-        default=True,
-        description="Prevent JavaScript access to cookie",
-    )
-    COOKIE_SAMESITE: Literal["lax", "strict", "none"] = Field(
-        default="lax",
-        description="SameSite cookie policy (lax, strict, or none)",
     )
 
     # Email settings for verification

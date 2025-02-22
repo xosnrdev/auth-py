@@ -58,6 +58,8 @@ class UserUpdate(BaseModel):
             "example": {
                 "phone": "+1234567890",
                 "password": "newP@ssw0rd",
+                "is_active": True,
+                "is_verified": True,
             }
         },
     )
@@ -74,6 +76,14 @@ class UserUpdate(BaseModel):
         max_length=72,  # bcrypt limit
         description="User's new password (will be hashed)",
         examples=["newP@ssw0rd"],
+    )
+    is_active: bool | None = Field(
+        default=None,
+        description="Whether the user account is active",
+    )
+    is_verified: bool | None = Field(
+        default=None,
+        description="Whether the user's email is verified",
     )
 
 

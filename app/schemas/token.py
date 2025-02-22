@@ -5,6 +5,26 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 
+class TokenResponse(BaseModel):
+    """Token response for API clients."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "token_type": "bearer",
+                "expires_in": 3600,
+            }
+        },
+    )
+
+    access_token: str
+    refresh_token: str | None = None  # Optional for web clients
+    token_type: str
+    expires_in: int
+
+
 class TokenIntrospectionResponse(BaseModel):
     """Token introspection response following RFC 7662."""
 

@@ -82,8 +82,8 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             key="csrf_token",
             value=cookie_token,
             httponly=True,
-            secure=settings.COOKIE_SECURE,
-            samesite=settings.COOKIE_SAMESITE,
+            secure=True,  # Always require HTTPS
+            samesite="lax",  # Always use lax for security
         )
 
         return response
@@ -109,8 +109,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         # HSTS: Require HTTPS for 1 year, include subdomains
-        if settings.COOKIE_SECURE:  # Only add HSTS if cookies are secure
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
         # Prevent browsers from MIME-sniffing
         response.headers["X-Content-Type-Options"] = "nosniff"

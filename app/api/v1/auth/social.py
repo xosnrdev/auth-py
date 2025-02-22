@@ -6,7 +6,7 @@ Supports:
 """
 
 import logging
-from typing import Literal
+from enum import Enum
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy import func, select
@@ -24,10 +24,19 @@ from app.core.oauth2 import (
 )
 from app.models import AuditLog, User
 from app.schemas import UserResponse
+from app.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/social", tags=["social"])
+
+
+class ProviderType(str, Enum):
+    """OAuth2 provider types."""
+
+    GOOGLE = "google"
+    APPLE = "apple"
+
 
 # Initialize OAuth2 providers
 google_provider = GoogleOAuth2Provider(
@@ -45,8 +54,6 @@ apple_provider = AppleOAuth2Provider(
         key_id=settings.APPLE_KEY_ID,
     ),
 )
-
-ProviderType = Literal["google", "apple"]
 
 
 @router.get("/{provider}/authorize")
@@ -71,8 +78,8 @@ async def authorize(
     """
     try:
         oauth_provider = {
-            "google": google_provider,
-            "apple": apple_provider,
+            ProviderType.GOOGLE: google_provider,
+            ProviderType.APPLE: apple_provider,
         }[provider]
 
         url, state = await oauth_provider.get_authorization_url(request)
@@ -121,8 +128,8 @@ async def callback(
     try:
         # Get provider instance
         oauth_provider = {
-            "google": google_provider,
-            "apple": apple_provider,
+            ProviderType.GOOGLE: google_provider,
+            ProviderType.APPLE: apple_provider,
         }[provider]
 
         # Exchange code for token
@@ -138,8 +145,8 @@ async def callback(
 
         if user:
             # Update social ID if not already linked
-            if provider not in user.social_id:
-                user.social_id[provider] = user_info["sub"]
+            if provider.value not in user.social_id:
+                user.social_id[provider.value] = user_info["sub"]
                 await db.commit()
         else:
             # Create new user
@@ -147,7 +154,7 @@ async def callback(
                 email=user_info["email"],
                 password_hash="",  # No password for social auth
                 is_verified=user_info["email_verified"],
-                social_id={provider: user_info["sub"]},
+                social_id={provider.value: user_info["sub"]},
             )
             db.add(user)
             await db.commit()
@@ -156,10 +163,10 @@ async def callback(
         # Log social login
         audit_log = AuditLog(
             user_id=user.id,
-            action=f"social_login_{provider}",
+            action=f"social_login_{provider.value}",
             ip_address=request.client.host if request.client else "unknown",
             user_agent=request.headers.get("user-agent", ""),
-            details=f"Social login via {provider}",
+            details=f"Social login via {provider.value}",
         )
         db.add(audit_log)
         await db.commit()
@@ -170,6 +177,8 @@ async def callback(
         # Create tokens based on client type
         tokens = await token_service.create_tokens(
             user_id=user.id,
+            user_agent=request.headers.get("user-agent", ""),
+            ip_address=get_client_ip(request),
             response=None if wants_json else response,
         )
 
@@ -195,7 +204,7 @@ async def callback(
 @requires_admin
 async def list_providers() -> list[str]:
     """List available OAuth2 providers (admin only)."""
-    return ["google", "apple"]
+    return [provider.value for provider in ProviderType]
 
 
 @router.get("/stats", response_model=dict[str, int])
@@ -204,13 +213,13 @@ async def get_social_stats(db: DBSession) -> dict[str, int]:
     """Get social login statistics (admin only)."""
     # Count users by provider using SQLAlchemy's func.count()
     google_count = await db.scalar(
-        select(func.count(User.id)).where(User.social_id["google"].isnot(None))
+        select(func.count(User.id)).where(User.social_id[ProviderType.GOOGLE.value].isnot(None))
     ) or 0
     apple_count = await db.scalar(
-        select(func.count(User.id)).where(User.social_id["apple"].isnot(None))
+        select(func.count(User.id)).where(User.social_id[ProviderType.APPLE.value].isnot(None))
     ) or 0
 
     return {
-        "google_users": google_count,
-        "apple_users": apple_count,
+        f"{ProviderType.GOOGLE.value}_users": google_count,
+        f"{ProviderType.APPLE.value}_users": apple_count,
     }

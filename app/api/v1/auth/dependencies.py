@@ -3,36 +3,34 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Cookie, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.jwt import token_service
+from app.core.jwt import TokenType, token_service
 from app.db.base import get_db
 from app.models import User
 
 # Common dependencies
 DBSession = Annotated[AsyncSession, Depends(get_db)]
+Token = Annotated[str, Depends(HTTPBearer())]
 
 # Initialize bearer scheme
-bearer_scheme = HTTPBearer(auto_error=False)
+bearer_scheme = HTTPBearer(auto_error=True)
 
 
 async def get_current_user(
     db: DBSession,
-    refresh_token: str | None = Cookie(None, alias="session"),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> User:
-    """Get the current authenticated user from JWT token.
+    """Get the current authenticated user from JWT access token.
 
-    Supports both cookie-based (web) and header-based (API) authentication.
-    For web clients, uses refresh token from cookie.
-    For API clients, uses access token from Authorization header.
+    Only accepts access tokens via Authorization header, following RFC 6750.
+    Refresh tokens should only be used to obtain new access tokens.
 
     Args:
         db: Database session
-        refresh_token: Refresh token from cookie
         credentials: Bearer token from Authorization header
 
     Returns:
@@ -41,25 +39,9 @@ async def get_current_user(
     Raises:
         HTTPException: If token is invalid or user not found
     """
-    # Check for token in either cookie or header
-    if not refresh_token and not credentials:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
-
     try:
-        # Use refresh token from cookie for web clients
-        if refresh_token:
-            token_data = await token_service.verify_token(refresh_token, "refresh")
-        # Use access token from header for API clients
-        elif credentials:
-            token_data = await token_service.verify_token(credentials.credentials, "access")
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Not authenticated",
-            )
+        # Verify access token
+        token_data = await token_service.verify_token(credentials.credentials, TokenType.ACCESS)
 
         # Get user from database
         stmt = select(User).where(
@@ -80,6 +62,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
 
