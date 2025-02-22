@@ -4,7 +4,7 @@ from typing import Any, NotRequired, TypedDict
 
 from fastapi import HTTPException, status
 
-from app.core.oauth2.base import OAuth2Config, OAuth2Provider
+from app.core.oauth2.base import OAuth2Config, OAuth2Provider, UserInfo
 
 
 class GoogleUserInfo(TypedDict):
@@ -37,14 +37,14 @@ class GoogleOAuth2Config(OAuth2Config):
 class GoogleOAuth2Provider(OAuth2Provider):
     """Google OAuth2 provider implementation."""
 
-    async def get_user_info(self, token: dict[str, Any]) -> dict[str, Any]:
+    async def get_user_info(self, token: dict[str, Any]) -> UserInfo:
         """Get user info from Google.
 
         Args:
             token: Access token response
 
         Returns:
-            dict[str, Any]: User info from Google
+            UserInfo: User info from Google
 
         Raises:
             HTTPException: If user info retrieval fails
@@ -75,17 +75,16 @@ class GoogleOAuth2Provider(OAuth2Provider):
             except KeyError as e:
                 raise ValueError(f"Missing required field: {e}")
 
-            return {
-                "provider": "google",
-                "sub": validated_info["sub"],
-                "email": validated_info["email"],
-                "email_verified": validated_info["email_verified"],
-                "name": validated_info.get("name"),
-                "given_name": validated_info.get("given_name"),
-                "family_name": validated_info.get("family_name"),
-                "picture": validated_info.get("picture"),
-                "locale": validated_info.get("locale"),
-            }
+            return UserInfo(
+                provider="google",
+                sub=validated_info["sub"],
+                email=validated_info["email"],
+                email_verified=validated_info["email_verified"],
+                name=validated_info.get("name"),
+                family_name=validated_info.get("family_name"),
+                picture=validated_info.get("picture"),
+                locale=validated_info.get("locale"),
+            )
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

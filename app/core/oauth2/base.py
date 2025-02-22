@@ -2,11 +2,25 @@
 
 import secrets
 from abc import ABC, abstractmethod
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
+
+
+class UserInfo(TypedDict):
+    """Common user info structure returned by OAuth2 providers."""
+
+    provider: str  # Provider name (e.g., "google", "apple")
+    sub: str  # Subject identifier
+    email: str  # User's email
+    email_verified: bool  # Whether email is verified
+    name: NotRequired[str | None]  # User's full name or first name
+    family_name: NotRequired[str | None]  # User's last name
+    picture: NotRequired[str | None]  # Profile picture URL
+    locale: NotRequired[str | None]  # User's locale
+    is_private_email: NotRequired[bool]  # Whether email is private (Apple specific)
 
 
 class OAuth2Config(BaseModel):
@@ -137,14 +151,14 @@ class OAuth2Provider(ABC):
             ) from e
 
     @abstractmethod
-    async def get_user_info(self, token: dict[str, Any]) -> dict[str, Any]:
+    async def get_user_info(self, token: dict[str, Any]) -> UserInfo:
         """Get user info from provider.
 
         Args:
             token: Access token response
 
         Returns:
-            dict[str, Any]: User info from provider
+            UserInfo: User info from provider
 
         Raises:
             HTTPException: If user info retrieval fails

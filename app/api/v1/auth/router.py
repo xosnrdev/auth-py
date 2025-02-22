@@ -10,23 +10,35 @@ Following RFCs:
 import logging
 from datetime import UTC, datetime, timedelta
 from secrets import token_hex
-from typing import Annotated
+from typing import Annotated, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+    OAuth2PasswordRequestForm,
+)
 from sqlalchemy import select
 
-from app.api.v1.auth.dependencies import DBSession
+from app.api.v1.auth.dependencies import CurrentUser, DBSession
 from app.core import email_service
 from app.core.config import settings
 from app.core.jwt import TokenResponse, token_service
 from app.core.security import get_password_hash, verify_password
 from app.models import AuditLog, User
-from app.schemas import UserCreate, UserResponse
+from app.schemas import (
+    TokenIntrospectionResponse,
+    TokenMetadataResponse,
+    UserCreate,
+    UserResponse,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+bearer_scheme = HTTPBearer()
 
 
 def get_client_ip(request: Request) -> str:
@@ -298,3 +310,147 @@ async def logout(
         )
 
     return {"message": "Logged out successfully"}
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(
+    request: Request,
+    response: Response,
+    refresh_token: str | None = Cookie(None, alias=settings.COOKIE_NAME),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> TokenResponse:
+    """Refresh access token using refresh token.
+
+    For web clients, gets refresh token from cookie.
+    For API clients, expects refresh token in Authorization header.
+
+    Args:
+        request: FastAPI request object
+        response: FastAPI response object
+        refresh_token: Refresh token from cookie
+        credentials: Bearer token from Authorization header
+
+    Returns:
+        TokenResponse: New access and refresh tokens
+
+    Raises:
+        HTTPException:
+            - 401: Invalid or expired refresh token
+            - 401: Token has been revoked
+    """
+    # Get refresh token from either cookie or header
+    token = refresh_token or (credentials.credentials if credentials else None)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token required",
+        )
+
+    try:
+        # Verify refresh token
+        token_data = await token_service.verify_token(token, "refresh")
+        user_id = UUID(token_data.sub)
+
+        # Create new tokens
+        wants_json = "application/json" in request.headers.get("accept", "")
+        tokens = await token_service.create_tokens(
+            user_id=user_id,
+            response=None if wants_json else response,
+        )
+
+        # Revoke old refresh token
+        await token_service.revoke_token(token)
+
+        # Return new tokens
+        if tokens:
+            return tokens
+        return TokenResponse(
+            access_token="",  # Cookie-based flow, no tokens in response
+            refresh_token="",
+            token_type="bearer",
+            expires_in=0,
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+
+
+@router.post("/introspect", response_model=TokenIntrospectionResponse)
+async def introspect_token(
+    token: str,
+    current_user: CurrentUser,  # Already includes Depends
+    token_type_hint: Literal["access", "refresh"] | None = None,
+) -> TokenIntrospectionResponse:
+    """Introspect a token following RFC 7662.
+
+    This endpoint allows resource servers to validate tokens
+    and get information about the token, its scope, and the user.
+
+    Args:
+        token: Token to introspect
+        current_user: Current authenticated user (from dependency)
+        token_type_hint: Optional hint about token type
+
+    Returns:
+        TokenIntrospectionResponse: Token introspection data
+
+    Raises:
+        HTTPException:
+            - 401: Not authenticated
+            - 400: Invalid token
+    """
+    try:
+        # Try to verify token
+        token_data = await token_service.verify_token(
+            token,
+            token_type_hint or "access",  # Default to access token
+        )
+
+        # Convert datetime to timestamps
+        exp = int(token_data.exp.timestamp()) if token_data.exp else None
+        iat = int(token_data.iat.timestamp()) if token_data.iat else None
+
+        # Include username if token subject matches authenticated user
+        username = current_user.email if token_data.sub == str(current_user.id) else None
+
+        return TokenIntrospectionResponse(
+            active=True,
+            token_type=token_data.type,
+            username=username,
+            exp=exp,
+            iat=iat,
+            nbf=iat,  # Token is valid from issuance
+            sub=token_data.sub,
+            jti=token_data.jti,
+            iss=settings.APP_URL,
+            aud=[settings.APP_URL],  # List of intended audiences
+        )
+
+    except Exception:
+        # RFC 7662: Don't leak token validation errors
+        return TokenIntrospectionResponse(active=False)
+
+
+@router.get("/.well-known/oauth-authorization-server", response_model=TokenMetadataResponse)
+async def get_token_metadata() -> TokenMetadataResponse:
+    """Get token endpoint metadata following OAuth 2.0 Authorization Server Metadata.
+
+    This endpoint provides OAuth 2.0 clients with metadata about the
+    authorization server's configuration, including supported features
+    and endpoints.
+
+    Returns:
+        TokenMetadataResponse: Authorization server metadata
+    """
+    return TokenMetadataResponse(
+        issuer=settings.APP_URL,
+        authorization_endpoint=f"{settings.APP_URL}/api/v1/auth/social/{{provider}}/authorize",
+        token_endpoint=f"{settings.APP_URL}/api/v1/auth/login",
+        response_types_supported=["code"],
+        grant_types_supported=["authorization_code", "refresh_token", "password"],
+        token_endpoint_auth_methods_supported=["client_secret_post"],
+        code_challenge_methods_supported=["S256"],
+    )

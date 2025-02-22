@@ -2,6 +2,7 @@
 
 from app.schemas.audit import AuditLogBase, AuditLogCreate, AuditLogResponse
 from app.schemas.base import BaseSchema
+from app.schemas.token import TokenIntrospectionResponse, TokenMetadataResponse
 from app.schemas.user import UserBase, UserCreate, UserResponse, UserUpdate
 
 __all__ = [
@@ -16,4 +17,7 @@ __all__ = [
     "AuditLogBase",
     "AuditLogCreate",
     "AuditLogResponse",
+    # Token
+    "TokenIntrospectionResponse",
+    "TokenMetadataResponse",
 ]

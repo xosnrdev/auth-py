@@ -1,7 +1,7 @@
 """OAuth2 provider implementations."""
 
 from app.core.oauth2.apple import AppleOAuth2Config, AppleOAuth2Provider
-from app.core.oauth2.base import OAuth2Config, OAuth2Provider
+from app.core.oauth2.base import OAuth2Config, OAuth2Provider, UserInfo
 from app.core.oauth2.google import GoogleOAuth2Config, GoogleOAuth2Provider
 
 __all__ = [
@@ -11,4 +11,5 @@ __all__ = [
     "GoogleOAuth2Provider",
     "AppleOAuth2Config",
     "AppleOAuth2Provider",
+    "UserInfo",
 ]

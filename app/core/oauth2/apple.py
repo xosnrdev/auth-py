@@ -4,7 +4,7 @@ from typing import Any, NotRequired, TypedDict
 
 from fastapi import HTTPException, status
 
-from app.core.oauth2.base import OAuth2Config, OAuth2Provider
+from app.core.oauth2.base import OAuth2Config, OAuth2Provider, UserInfo
 
 
 class AppleNameInfo(TypedDict):
@@ -35,12 +35,14 @@ class AppleOAuth2Config(OAuth2Config):
         "name",
         "email",
     ]
+    team_id: str
+    key_id: str
 
 
 class AppleOAuth2Provider(OAuth2Provider):
     """Apple OAuth2 provider implementation."""
 
-    async def get_user_info(self, token: dict[str, Any]) -> dict[str, Any]:
+    async def get_user_info(self, token: dict[str, Any]) -> UserInfo:
         """Get user info from Apple ID token.
 
         Apple doesn't provide a userinfo endpoint, all user info
@@ -50,7 +52,7 @@ class AppleOAuth2Provider(OAuth2Provider):
             token: Access token response containing id_token
 
         Returns:
-            dict[str, Any]: User info from Apple ID token
+            UserInfo: User info from Apple ID token
 
         Raises:
             HTTPException: If user info extraction fails
@@ -84,15 +86,15 @@ class AppleOAuth2Provider(OAuth2Provider):
             user_info = token.get("user", {})
             name_info = user_info.get("name", {})
 
-            return {
-                "provider": "apple",
-                "sub": validated_claims["sub"],
-                "email": validated_claims["email"],
-                "email_verified": validated_claims["email_verified"],
-                "name": name_info.get("firstName"),
-                "family_name": name_info.get("lastName"),
-                "is_private_email": validated_claims["is_private_email"],
-            }
+            return UserInfo(
+                provider="apple",
+                sub=validated_claims["sub"],
+                email=validated_claims["email"],
+                email_verified=validated_claims["email_verified"],
+                name=name_info.get("firstName"),
+                family_name=name_info.get("lastName"),
+                is_private_email=validated_claims["is_private_email"],
+            )
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
