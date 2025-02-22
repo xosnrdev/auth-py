@@ -4,7 +4,6 @@ import asyncio
 from collections.abc import AsyncGenerator
 
 import pytest
-import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
@@ -13,7 +12,7 @@ from app.core.config import settings
 from app.core.middleware import RateLimitMiddleware
 
 
-@pytest_asyncio.fixture(scope="function")
+@pytest.fixture(scope="function")
 async def redis_client() -> AsyncGenerator[Redis]:
     """Create a Redis client for testing."""
     client = Redis.from_url(settings.REDIS_URI.unicode_string())
@@ -26,7 +25,8 @@ async def redis_client() -> AsyncGenerator[Redis]:
     finally:
         await client.aclose()
 
-@pytest_asyncio.fixture
+
+@pytest.fixture
 async def rate_limit_app(redis_client: Redis) -> FastAPI:
     """Create test FastAPI app with rate limiting."""
     app = FastAPI()
@@ -38,7 +38,8 @@ async def rate_limit_app(redis_client: Redis) -> FastAPI:
 
     return app
 
-@pytest_asyncio.fixture
+
+@pytest.fixture
 async def async_client(rate_limit_app: FastAPI) -> AsyncGenerator[AsyncClient]:
     """Create an async client for testing."""
     async with AsyncClient(
@@ -46,6 +47,7 @@ async def async_client(rate_limit_app: FastAPI) -> AsyncGenerator[AsyncClient]:
         base_url="http://test",
     ) as client:
         yield client
+
 
 @pytest.mark.asyncio
 async def test_rate_limit_headers(async_client: AsyncClient) -> None:
@@ -55,6 +57,7 @@ async def test_rate_limit_headers(async_client: AsyncClient) -> None:
     assert "X-RateLimit-Limit" in response.headers
     assert "X-RateLimit-Remaining" in response.headers
     assert "X-RateLimit-Reset" in response.headers
+
 
 @pytest.mark.asyncio
 async def test_rate_limit_exceeded(async_client: AsyncClient) -> None:
@@ -68,6 +71,7 @@ async def test_rate_limit_exceeded(async_client: AsyncClient) -> None:
     response = await async_client.get("/test")
     assert response.status_code == 429
     assert "Retry-After" in response.headers
+
 
 @pytest.mark.asyncio
 async def test_rate_limit_reset(async_client: AsyncClient, redis_client: Redis) -> None:
@@ -89,6 +93,7 @@ async def test_rate_limit_reset(async_client: AsyncClient, redis_client: Redis) 
     response = await async_client.get("/test")
     assert response.status_code == 200
 
+
 @pytest.mark.asyncio
 async def test_concurrent_requests(async_client: AsyncClient) -> None:
     """Test rate limiting handles concurrent requests correctly."""
@@ -101,6 +106,7 @@ async def test_concurrent_requests(async_client: AsyncClient) -> None:
 
     # Use asyncio.gather with return_exceptions=True to handle errors gracefully
     await asyncio.gather(*[make_request() for _ in range(10)], return_exceptions=True)
+
 
 @pytest.mark.asyncio
 async def test_docs_endpoints_not_limited(async_client: AsyncClient) -> None:

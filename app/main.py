@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.v1 import router as api_v1_router
 from app.core.middleware import (
-    CSRFMiddleware,
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
     setup_cors,
@@ -52,7 +51,6 @@ app = FastAPI(
 
 # Security middleware stack (order matters)
 app.add_middleware(SecurityHeadersMiddleware)  # Add security headers first
-app.add_middleware(CSRFMiddleware)  # CSRF protection
 app.add_middleware(RateLimitMiddleware)  # Rate limiting last to avoid unnecessary processing
 
 # CORS middleware with secure defaults
