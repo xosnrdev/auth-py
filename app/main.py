@@ -2,12 +2,15 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.v1 import router as api_v1_router
-from app.core.config import settings
-from app.core.middleware import RateLimitMiddleware
+from app.core.middleware import (
+    CSRFMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+    setup_cors,
+)
 from app.core.redis import close_redis, init_redis
 from app.db.base import engine
 from app.models import Base
@@ -47,17 +50,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Rate limiting middleware (5 requests/IP/minute)
-app.add_middleware(RateLimitMiddleware)
+# Security middleware stack (order matters)
+app.add_middleware(SecurityHeadersMiddleware)  # Add security headers first
+app.add_middleware(CSRFMiddleware)  # CSRF protection
+app.add_middleware(RateLimitMiddleware)  # Rate limiting last to avoid unnecessary processing
 
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
-    allow_methods=settings.CORS_ALLOW_METHODS,
-    allow_headers=settings.CORS_ALLOW_HEADERS,
-)
+# CORS middleware with secure defaults
+setup_cors(app)
 
 # Include API routes
 app.include_router(api_v1_router, prefix="/api")
