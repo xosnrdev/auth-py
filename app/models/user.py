@@ -36,6 +36,14 @@ class User(Base):
         server_default="{}",
     )
 
+    # Role-based access control
+    roles: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default='["user"]',  # Default role for all users
+        comment="User roles for RBAC (e.g., user, admin)",
+    )
+
     # Status fields
     is_verified: Mapped[bool] = mapped_column(
         Boolean,
@@ -58,6 +66,39 @@ class User(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+
+    def has_role(self, role: str) -> bool:
+        """Check if user has a specific role.
+
+        Args:
+            role: Role to check
+
+        Returns:
+            bool: True if user has the role
+        """
+        return role in self.roles
+
+    def has_any_role(self, roles: list[str]) -> bool:
+        """Check if user has any of the specified roles.
+
+        Args:
+            roles: List of roles to check
+
+        Returns:
+            bool: True if user has any of the roles
+        """
+        return bool(set(self.roles) & set(roles))
+
+    def has_all_roles(self, roles: list[str]) -> bool:
+        """Check if user has all specified roles.
+
+        Args:
+            roles: List of roles to check
+
+        Returns:
+            bool: True if user has all roles
+        """
+        return set(roles).issubset(set(self.roles))
 
     def __repr__(self) -> str:
         """String representation of User model."""

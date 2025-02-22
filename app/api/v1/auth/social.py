@@ -9,9 +9,10 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.v1.auth.dependencies import DBSession
+from app.core.auth import requires_admin
 from app.core.config import settings
 from app.core.jwt import TokenResponse, token_service
 from app.core.oauth2 import (
@@ -188,3 +189,28 @@ async def callback(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+@router.get("/providers", response_model=list[str])
+@requires_admin
+async def list_providers() -> list[str]:
+    """List available OAuth2 providers (admin only)."""
+    return ["google", "apple"]
+
+
+@router.get("/stats", response_model=dict[str, int])
+@requires_admin
+async def get_social_stats(db: DBSession) -> dict[str, int]:
+    """Get social login statistics (admin only)."""
+    # Count users by provider using SQLAlchemy's func.count()
+    google_count = await db.scalar(
+        select(func.count(User.id)).where(User.social_id["google"].isnot(None))
+    ) or 0
+    apple_count = await db.scalar(
+        select(func.count(User.id)).where(User.social_id["apple"].isnot(None))
+    ) or 0
+
+    return {
+        "google_users": google_count,
+        "apple_users": apple_count,
+    }

@@ -15,7 +15,6 @@ from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from fastapi.security import (
-    HTTPAuthorizationCredentials,
     HTTPBearer,
     OAuth2PasswordRequestForm,
 )
@@ -23,6 +22,7 @@ from sqlalchemy import select
 
 from app.api.v1.auth.dependencies import CurrentUser, DBSession
 from app.core import email_service
+from app.core.auth import requires_admin
 from app.core.config import settings
 from app.core.jwt import TokenResponse, token_service
 from app.core.security import get_password_hash, verify_password
@@ -142,6 +142,72 @@ async def register(
         await db.commit()
 
     return db_user
+
+
+@router.get("/users", response_model=list[UserResponse])
+@requires_admin
+async def list_users(
+    db: DBSession,
+    current_user: CurrentUser,  # noqa: ARG001  # Required by @requires_admin
+    skip: int = 0,
+    limit: int = 100,
+) -> list[User]:
+    """List all users (admin only)."""
+    stmt = select(User).offset(skip).limit(limit)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
+
+
+@router.get("/users/{user_id}", response_model=UserResponse)
+@requires_admin
+async def get_user(
+    user_id: UUID,
+    db: DBSession,
+    current_user: CurrentUser,  # noqa: ARG001  # Required by @requires_admin
+) -> User:
+    """Get user by ID (admin only)."""
+    stmt = select(User).where(User.id == user_id)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    return user
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@requires_admin
+async def delete_user(
+    request: Request,
+    user_id: UUID,
+    db: DBSession,
+    current_user: CurrentUser,  # Required by @requires_admin
+) -> None:
+    """Delete user by ID (admin only)."""
+    stmt = select(User).where(User.id == user_id)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # Log deletion
+    audit_log = AuditLog(
+        user_id=current_user.id,
+        action="delete_user",
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        details=f"Deleted user {user.email}",
+    )
+    db.add(audit_log)
+
+    # Delete user
+    await db.delete(user)
+    await db.commit()
 
 
 @router.post("/login", response_model=UserResponse | TokenResponse)
@@ -317,7 +383,6 @@ async def refresh_token(
     request: Request,
     response: Response,
     refresh_token: str | None = Cookie(None, alias=settings.COOKIE_NAME),
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> TokenResponse:
     """Refresh access token using refresh token.
 
@@ -328,7 +393,6 @@ async def refresh_token(
         request: FastAPI request object
         response: FastAPI response object
         refresh_token: Refresh token from cookie
-        credentials: Bearer token from Authorization header
 
     Returns:
         TokenResponse: New access and refresh tokens
@@ -338,9 +402,7 @@ async def refresh_token(
             - 401: Invalid or expired refresh token
             - 401: Token has been revoked
     """
-    # Get refresh token from either cookie or header
-    token = refresh_token or (credentials.credentials if credentials else None)
-    if not token:
+    if not refresh_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token required",
@@ -348,7 +410,7 @@ async def refresh_token(
 
     try:
         # Verify refresh token
-        token_data = await token_service.verify_token(token, "refresh")
+        token_data = await token_service.verify_token(refresh_token, "refresh")
         user_id = UUID(token_data.sub)
 
         # Create new tokens
@@ -359,7 +421,7 @@ async def refresh_token(
         )
 
         # Revoke old refresh token
-        await token_service.revoke_token(token)
+        await token_service.revoke_token(refresh_token)
 
         # Return new tokens
         if tokens:
@@ -379,29 +441,13 @@ async def refresh_token(
 
 
 @router.post("/introspect", response_model=TokenIntrospectionResponse)
+@requires_admin
 async def introspect_token(
     token: str,
-    current_user: CurrentUser,  # Already includes Depends
+    current_user: CurrentUser,  # Required by @requires_admin
     token_type_hint: Literal["access", "refresh"] | None = None,
 ) -> TokenIntrospectionResponse:
-    """Introspect a token following RFC 7662.
-
-    This endpoint allows resource servers to validate tokens
-    and get information about the token, its scope, and the user.
-
-    Args:
-        token: Token to introspect
-        current_user: Current authenticated user (from dependency)
-        token_type_hint: Optional hint about token type
-
-    Returns:
-        TokenIntrospectionResponse: Token introspection data
-
-    Raises:
-        HTTPException:
-            - 401: Not authenticated
-            - 400: Invalid token
-    """
+    """Introspect a token following RFC 7662 (admin only)."""
     try:
         # Try to verify token
         token_data = await token_service.verify_token(
