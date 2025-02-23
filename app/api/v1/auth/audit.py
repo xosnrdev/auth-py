@@ -1,6 +1,14 @@
-"""Audit log endpoints for tracking user activity."""
+"""Audit log endpoints for tracking user activity.
 
-from datetime import datetime, timedelta
+This module implements secure audit logging functionality including:
+- Administrative audit log access
+- User activity tracking
+- Filtered log retrieval
+- Recent activity monitoring
+Following security best practices and privacy considerations.
+"""
+
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -27,7 +35,34 @@ async def list_audit_logs(
     skip: int = 0,
     limit: int = 100,
 ) -> list[AuditLog]:
-    """List audit logs with optional filters (admin only)."""
+    """List audit logs with comprehensive filtering and pagination.
+
+    Implements secure audit log retrieval:
+    1. Role-based access control (admin only)
+    2. Multiple filter criteria
+    3. Date range filtering
+    4. Pagination for large datasets
+    5. Ordered by timestamp
+
+    Args:
+        db: Database session
+        _: Current admin user (required by @requires_admin decorator)
+        user_id: Optional filter by specific user
+        action: Optional filter by action type
+        start_date: Optional filter by start date
+        end_date: Optional filter by end date
+        skip: Number of records to skip (pagination)
+        limit: Maximum number of records to return
+
+    Returns:
+        list[AuditLog]: List of audit logs matching criteria
+
+    Security:
+        - Requires admin role
+        - Implements pagination
+        - Supports data filtering
+        - Rate limited by default middleware
+    """
     # Build query
     stmt = select(AuditLog)
 
@@ -56,7 +91,30 @@ async def get_audit_log(
     db: DBSession,
     _: CurrentUser,  # Required by @requires_admin
 ) -> AuditLog:
-    """Get audit log by ID (admin only)."""
+    """Get specific audit log entry by ID.
+
+    Implements secure audit log retrieval:
+    1. Role-based access control (admin only)
+    2. UUID validation
+    3. Not found handling
+    4. Single record access
+
+    Args:
+        log_id: UUID of the audit log to retrieve
+        db: Database session
+        _: Current admin user (required by @requires_admin decorator)
+
+    Returns:
+        AuditLog: Specific audit log entry
+
+    Raises:
+        HTTPException: If log entry not found (404)
+
+    Security:
+        - Requires admin role
+        - Validates UUID format
+        - Rate limited by default middleware
+    """
     stmt = select(AuditLog).where(AuditLog.id == log_id)
     result = await db.execute(stmt)
     log = result.scalar_one_or_none()
@@ -79,7 +137,35 @@ async def list_my_audit_logs(
     skip: int = 0,
     limit: int = 100,
 ) -> list[AuditLog]:
-    """List current user's audit logs with optional filters."""
+    """List current user's audit logs with filtering options.
+
+    Implements secure personal audit log access:
+    1. User-specific data access
+    2. Multiple filter criteria
+    3. Date range filtering
+    4. Pagination for large datasets
+    5. Access logging
+    6. Ordered by timestamp
+
+    Args:
+        request: FastAPI request object
+        db: Database session
+        current_user: Current authenticated user
+        action: Optional filter by action type
+        start_date: Optional filter by start date
+        end_date: Optional filter by end date
+        skip: Number of records to skip (pagination)
+        limit: Maximum number of records to return
+
+    Returns:
+        list[AuditLog]: List of user's audit logs matching criteria
+
+    Security:
+        - User-specific data isolation
+        - Implements pagination
+        - Logs access attempts
+        - Rate limited by default middleware
+    """
     # Build query
     stmt = select(AuditLog).where(AuditLog.user_id == current_user.id)
 
@@ -120,12 +206,36 @@ async def list_recent_activity(
     days: int = 7,
     limit: int = 10,
 ) -> list[AuditLog]:
-    """List current user's recent activity."""
+    """List current user's recent activity with time window.
+
+    Implements secure recent activity tracking:
+    1. User-specific data access
+    2. Time window filtering
+    3. Limited result set
+    4. Access logging
+    5. Ordered by timestamp
+
+    Args:
+        request: FastAPI request object
+        db: Database session
+        current_user: Current authenticated user
+        days: Number of days to look back
+        limit: Maximum number of records to return
+
+    Returns:
+        list[AuditLog]: List of recent user activity
+
+    Security:
+        - User-specific data isolation
+        - Time-boxed queries
+        - Logs access attempts
+        - Rate limited by default middleware
+    """
     # Build query
     stmt = (
         select(AuditLog)
         .where(AuditLog.user_id == current_user.id)
-        .where(AuditLog.created_at >= datetime.utcnow() - timedelta(days=days))
+        .where(AuditLog.created_at >= datetime.now(UTC) - timedelta(days=days))
         .order_by(AuditLog.created_at.desc())
         .limit(limit)
     )

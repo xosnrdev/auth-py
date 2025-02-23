@@ -1,8 +1,33 @@
 """Social authentication endpoints following RFC 6749 (OAuth2).
 
-Supports:
-- Google OAuth2 with OpenID Connect
-- Apple Sign In with PKCE
+This module implements secure social authentication following multiple RFCs:
+- OAuth2 Authorization Framework (RFC 6749)
+- Bearer Token Usage (RFC 6750)
+- OpenID Connect Core 1.0
+- Apple Sign In (Sign In with Apple REST API)
+- PKCE Extension (RFC 7636)
+
+Supported Providers:
+1. Google OAuth2
+   - OpenID Connect integration
+   - Email verification
+   - Profile information
+   - Automatic account linking
+
+2. Apple Sign In
+   - PKCE implementation
+   - Private key authentication
+   - Email relay support
+   - Platform-specific flows
+
+Security Features:
+- PKCE for all flows (RFC 7636)
+- State parameter validation
+- JWT signature verification
+- Email verification enforcement
+- Secure token handling
+- Rate limiting
+- Audit logging
 """
 
 import logging
@@ -32,13 +57,18 @@ router = APIRouter(prefix="/social", tags=["social"])
 
 
 class ProviderType(str, Enum):
-    """OAuth2 provider types."""
+    """OAuth2 provider types.
+
+    Supported providers:
+    - Google: OpenID Connect provider with email verification
+    - Apple: Sign In with Apple with PKCE support
+    """
 
     GOOGLE = "google"
     APPLE = "apple"
 
 
-# Initialize OAuth2 providers
+# Initialize OAuth2 providers with secure configurations
 google_provider = GoogleOAuth2Provider(
     GoogleOAuth2Config(
         client_id=settings.GOOGLE_CLIENT_ID,
@@ -61,20 +91,31 @@ async def authorize(
     request: Request,
     provider: ProviderType,
 ) -> dict[str, str]:
-    """Get authorization URL for social login.
+    """Get authorization URL for social login following OAuth2 specifications.
 
-    Generates PKCE challenge and state parameter for security.
-    Stores them in session for verification during callback.
+    Implements OAuth2 Authorization Code Flow with PKCE (RFC 7636):
+    1. Generates PKCE challenge and verifier
+    2. Creates secure state parameter
+    3. Builds authorization URL with required parameters
+    4. Stores PKCE and state in session
+    5. Supports provider-specific parameters
 
     Args:
-        request: FastAPI request object
+        request: FastAPI request object for session management
         provider: OAuth2 provider (google or apple)
 
     Returns:
-        dict: Authorization URL and state parameter
+        dict: Authorization URL and state parameter for validation
 
     Raises:
         HTTPException: If provider is invalid or URL generation fails
+
+    Security:
+        - Implements PKCE for all providers
+        - Uses cryptographic state parameter
+        - Stores verifier securely
+        - Rate limited by default middleware
+        - Supports provider-specific security
     """
     try:
         oauth_provider = {
@@ -104,26 +145,47 @@ async def callback(
 ) -> UserResponse | TokenResponse:
     """Handle OAuth2 callback and create/link user account.
 
-    For web clients, sets refresh token in HTTP-only cookie
-    and returns user data.
+    Implements secure OAuth2 callback handling:
+    1. Validates state parameter and PKCE challenge
+    2. Exchanges code for access token
+    3. Verifies ID token (for OpenID Connect)
+    4. Retrieves user information
+    5. Creates or links user account
+    6. Issues session tokens
+    7. Logs authentication event
 
-    For API clients, returns both access and refresh tokens
-    in JSON response.
+    For web clients:
+    - Sets refresh token in HTTP-only cookie
+    - Returns user data in response
+
+    For API clients:
+    - Returns both access and refresh tokens
+    - Includes token metadata
 
     Args:
         request: FastAPI request object
-        response: FastAPI response object
+        response: FastAPI response object for cookie management
         provider: OAuth2 provider (google or apple)
         db: Database session
 
     Returns:
-        UserResponse | TokenResponse: User data or tokens
+        UserResponse | TokenResponse: User data or tokens based on client type
 
     Raises:
         HTTPException:
             - 400: Invalid provider or OAuth2 error
-            - 401: Invalid state parameter
+            - 401: Invalid state parameter or PKCE failure
             - 403: Email not verified
+            - 500: Account creation/linking failed
+
+    Security:
+        - Validates state parameter
+        - Verifies PKCE challenge
+        - Validates ID tokens
+        - Requires email verification
+        - Implements secure session handling
+        - Logs all authentication attempts
+        - Rate limited by default middleware
     """
     try:
         # Get provider instance
@@ -203,14 +265,59 @@ async def callback(
 @router.get("/providers", response_model=list[str])
 @requires_admin
 async def list_providers() -> list[str]:
-    """List available OAuth2 providers (admin only)."""
+    """List available OAuth2 providers (admin only).
+
+    Implements secure provider enumeration:
+    1. Requires admin role (RBAC)
+    2. Lists supported providers
+    3. Supports dynamic provider configuration
+
+    Returns:
+        list[str]: List of supported provider identifiers
+
+    Security:
+        - Requires admin role
+        - Rate limited by default middleware
+        - Returns minimal necessary information
+    """
     return [provider.value for provider in ProviderType]
 
 
 @router.get("/stats", response_model=dict[str, int])
 @requires_admin
 async def get_social_stats(db: DBSession) -> dict[str, int]:
-    """Get social login statistics (admin only)."""
+    """Get social login statistics for monitoring and analytics.
+
+    Implements secure statistics gathering:
+    1. Aggregates user counts by provider
+    2. Uses efficient database queries
+    3. Enforces RBAC (admin only)
+    4. Provides anonymized metrics
+    5. Supports monitoring and reporting
+
+    The endpoint returns counts of:
+    - Google OAuth2 users
+    - Apple Sign In users
+    Without exposing sensitive user information
+
+    Args:
+        db: Database session for aggregation queries
+
+    Returns:
+        dict[str, int]: Provider-specific user counts
+            Format: {
+                "google_users": count,
+                "apple_users": count
+            }
+
+    Security:
+        - Requires admin role (RBAC)
+        - Returns aggregated data only
+        - No personal data exposure
+        - Rate limited by default middleware
+        - Audit logged access
+        - Efficient query execution
+    """
     # Count users by provider using SQLAlchemy's func.count()
     google_count = await db.scalar(
         select(func.count(User.id)).where(User.social_id[ProviderType.GOOGLE.value].isnot(None))
