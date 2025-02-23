@@ -181,6 +181,10 @@ class Settings(BaseSettings):
         description="PostgreSQL database URI",
         examples=["postgresql+asyncpg://user:pass@localhost:5432/dbname"],
     )
+    DEBUG: bool = Field(
+        default=False,
+        description="Enable debug mode",
+    )
 
     # Redis settings
     REDIS_URI: RedisDsn = Field(
