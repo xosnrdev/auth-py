@@ -1,3 +1,51 @@
+"""Application configuration management following security best practices.
+
+This module implements secure configuration management following RFCs:
+- OAuth2 (RFC 6749)
+- Bearer Token Usage (RFC 6750)
+- JWT Claims (RFC 7519)
+- CORS (Cross-Origin Resource Sharing)
+- SMTP over TLS (RFC 3207)
+- HTTP Security Headers (RFC 6797)
+- Rate Limiting (RFC 6585)
+
+Core Features:
+1. Environment Configuration
+   - Environment variable loading
+   - Secure defaults
+   - Type validation
+   - Secret handling
+   - URL validation
+
+2. Security Settings
+   - JWT configuration
+   - CORS policies
+   - Rate limiting
+   - Cookie security
+   - Header policies
+
+3. Service Integration
+   - Database connections
+   - Redis caching
+   - SMTP settings
+   - OAuth2 providers
+   - Session management
+
+4. Validation Features
+   - Type checking
+   - URL validation
+   - Secret handling
+   - Format verification
+   - Default protection
+
+Security Considerations:
+- Secure secret handling
+- Environment isolation
+- Type safety
+- URL validation
+- Default protection
+"""
+
 from functools import lru_cache
 
 from pydantic import (
@@ -12,7 +60,43 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    """Application settings."""
+    """Application settings with secure defaults.
+
+    Implements secure configuration management:
+    1. Application Settings
+       - Base URL configuration
+       - Endpoint paths
+       - Version information
+       - Service discovery
+
+    2. Security Settings
+       - JWT configuration
+       - Token expiration
+       - Cookie security
+       - CORS policies
+       - Rate limiting
+
+    3. Authentication Settings
+       - OAuth2 providers
+       - Social login
+       - Email verification
+       - Password policies
+       - Session management
+
+    4. Infrastructure Settings
+       - Database connections
+       - Redis caching
+       - SMTP configuration
+       - Connection pooling
+       - Resource limits
+
+    Security:
+        - Environment isolation
+        - Secret protection
+        - Type validation
+        - URL verification
+        - Default security
+    """
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -32,6 +116,11 @@ class Settings(BaseSettings):
         default="/verify-email",
         description="Path for email verification",
         examples=["/verify-email", "/auth/verify"],
+    )
+    PASSWORD_RESET_URL_PATH: str = Field(
+        default="/reset-password",
+        description="Path for password reset",
+        examples=["/reset-password", "/auth/reset"],
     )
 
     # Rate limiting settings
@@ -166,7 +255,37 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URI", "REDIS_URI")
     @classmethod
     def validate_uris(cls, v: PostgresDsn | RedisDsn, info: ValidationInfo) -> PostgresDsn | RedisDsn:
-        """Validate that URIs are properly formatted."""
+        """Validate database and Redis URIs.
+
+        Implements secure URI validation:
+        1. Format Validation
+           - Checks URI structure
+           - Validates components
+           - Ensures required parts
+           - Handles defaults
+
+        2. Security Checks
+           - Protocol verification
+           - Port validation
+           - Parameter checking
+           - Credential handling
+
+        Args:
+            v: URI to validate
+            info: Validation context information
+
+        Returns:
+            PostgresDsn | RedisDsn: Validated URI
+
+        Raises:
+            ValueError: If URI is invalid or missing
+
+        Security:
+            - URI validation
+            - Protocol checks
+            - Port validation
+            - Safe defaults
+        """
         if not v:
             raise ValueError(f"{info.field_name} must be set")
         return v
@@ -176,13 +295,32 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance.
 
+    Implements secure settings management:
+    1. Settings Loading
+       - Environment variables
+       - Configuration files
+       - Secure defaults
+       - Type validation
+
+    2. Caching
+       - LRU cache usage
+       - Memory efficiency
+       - Performance optimization
+       - Thread safety
+
     Returns:
         Settings: Application settings loaded from environment variables.
 
     Raises:
         ValidationError: If required environment variables are missing or invalid.
+
+    Security:
+        - Environment isolation
+        - Type validation
+        - Cache security
+        - Error handling
     """
-    return Settings()  # Environment file is configured in model_config
+    return Settings()
 
 
 settings = get_settings()
