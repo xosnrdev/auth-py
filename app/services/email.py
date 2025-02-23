@@ -1,125 +1,76 @@
-"""Email service for secure transactional emails.
+"""Secure transactional email service with TLS and template support.
 
-This module implements secure email delivery following RFCs:
-- SMTP over TLS (RFC 3207)
-- Email Format (RFC 5322)
-- MIME (RFC 2045-2049)
-- HTML Email (RFC 2392)
-- Email Security (RFC 8314)
+Example:
+```python
+# Initialize service
+email_svc = EmailService()
 
-Core Features:
-1. Email Templates
-   - Email verification
-   - Password reset
-   - Security notifications
-   - HTML/plain text versions
+# Send verification email
+await email_svc.send_verification_email(
+    to_email="user@example.com",
+    verification_code="abc123"  # From your token generator
+)
 
-2. Security Features
-   - TLS encryption
-   - Token delivery
-   - Link expiration
-   - Anti-phishing measures
-   - Secure headers
+# Send password reset
+await email_svc.send_password_reset_email(
+    to_email="user@example.com",
+    reset_token="xyz789"  # From your token generator
+)
+```
 
-3. SMTP Integration
-   - Async SMTP client
-   - Connection pooling
-   - Error handling
-   - Retry logic
-   - Logging
-
-4. Content Features
-   - Multipart messages
-   - HTML formatting
-   - Plain text fallback
-   - URL management
-   - Template system
-
-Security Considerations:
-- Uses SMTP over TLS
-- Validates email addresses
-- Includes security headers
-- Prevents email injection
-- Logs delivery attempts
-- Handles errors securely
+Critical Notes:
+- Requires SMTP with TLS (port 587 or 465)
+- Set all SMTP_* environment variables before use
+- URLs must be HTTPS in production
+- Tokens should have < 24h expiry
 """
 
+import asyncio
 import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from typing import Final
 from urllib.parse import urljoin
 
 import aiosmtplib
-from pydantic import EmailStr
+from pydantic import EmailStr, SecretStr
 
 from app.core.config import settings
 
+# Initialize logger
 logger = logging.getLogger(__name__)
+
+# Constants
+MAX_SUBJECT_LENGTH: Final[int] = 78
+MAX_RETRIES: Final[int] = 3
+RETRY_DELAY_SECONDS: Final[int] = 1
+MIME_TYPE_PLAIN: Final[str] = "plain"
+MIME_TYPE_HTML: Final[str] = "html"
+MIME_TYPE_ALTERNATIVE: Final[str] = "alternative"
 
 
 class EmailService:
-    """Async email service with secure SMTP delivery.
-
-    This service implements secure email delivery following SMTP standards:
-    1. Email Delivery
-       - Async SMTP client
-       - TLS encryption
-       - Connection pooling
-       - Error handling
-       - Delivery tracking
-
-    2. Message Formatting
-       - MIME multipart
-       - HTML/plain text
-       - Security headers
-       - UTF-8 encoding
-       - Anti-spam compliance
-
-    3. Template System
-       - Verification emails
-       - Password reset
-       - Security notices
-       - Custom templates
-       - Variable substitution
-
-    4. Security Features
-       - TLS required
-       - Email validation
-       - Token handling
-       - Link expiration
-       - Anti-phishing
-
-    Usage:
-        service = EmailService()
-
-        # Send verification email
-        await service.send_verification_email(
-            to_email="user@example.com",
-            verification_code="abc123"
-        )
-
-        # Send password reset
-        await service.send_password_reset_email(
-            to_email="user@example.com",
-            reset_token="xyz789"
-        )
-    """
+    """Async email service with secure SMTP delivery and templates."""
 
     def __init__(self) -> None:
-        """Initialize email service with secure defaults.
+        """Initialize with SMTP settings from environment."""
+        # Assert required settings
+        assert settings.SMTP_HOST, "SMTP_HOST must be set"
+        assert settings.SMTP_PORT, "SMTP_PORT must be set"
+        assert settings.SMTP_USER, "SMTP_USER must be set"
+        assert settings.SMTP_PASSWORD, "SMTP_PASSWORD must be set"
+        assert settings.SMTP_FROM_EMAIL, "SMTP_FROM_EMAIL must be set"
+        assert settings.SMTP_FROM_NAME, "SMTP_FROM_NAME must be set"
+        assert settings.APP_URL.startswith("https://") or settings.APP_URL.startswith("http://localhost"), (
+            "APP_URL must use HTTPS in production"
+        )
 
-        Configures the service with settings from environment:
-        - SMTP server details
-        - Authentication credentials
-        - Sender information
-        - Security options
-        """
-        self.host = settings.SMTP_HOST
-        self.port = settings.SMTP_PORT
-        self.username = settings.SMTP_USER
-        self.password = settings.SMTP_PASSWORD
-        self.from_email = settings.SMTP_FROM_EMAIL
-        self.from_name = settings.SMTP_FROM_NAME
+        self.host: str = settings.SMTP_HOST
+        self.port: int = settings.SMTP_PORT
+        self.username: str = settings.SMTP_USER
+        self.password: SecretStr = SecretStr(settings.SMTP_PASSWORD)
+        self.from_email: EmailStr = settings.SMTP_FROM_EMAIL
+        self.from_name: str = settings.SMTP_FROM_NAME
 
     async def _send_email(
         self,
@@ -128,126 +79,98 @@ class EmailService:
         html_content: str,
         text_content: str,
     ) -> None:
-        """Send secure email using SMTP over TLS.
-
-        Implements secure email delivery:
-        1. Creates MIME multipart message
-        2. Adds HTML and plain text versions
-        3. Sets security headers
-        4. Establishes TLS connection
-        5. Authenticates with SMTP server
-        6. Sends message securely
-        7. Handles delivery errors
+        """Send email with retry logic.
 
         Args:
-            to_email: Validated recipient email address
-            subject: Email subject (sanitized)
-            html_content: HTML version of email body
-            text_content: Plain text version of email body
+            to_email: Recipient email
+            subject: Email subject
+            html_content: HTML version
+            text_content: Plain text version
 
         Raises:
-            RuntimeError: If email sending fails
-
-        Security:
-            - Requires TLS
-            - Validates addresses
-            - Sets security headers
-            - Prevents injection
-            - Logs attempts
-            - Handles errors
+            RuntimeError: If sending fails after retries
         """
-        # Create message container
-        msg = MIMEMultipart("alternative")
+        # Validate inputs
+        assert len(subject) <= MAX_SUBJECT_LENGTH, f"Subject exceeds {MAX_SUBJECT_LENGTH} chars"
+        assert html_content, "HTML content required"
+        assert text_content, "Text content required"
+
+        # Create message
+        msg = MIMEMultipart(MIME_TYPE_ALTERNATIVE)
         msg["Subject"] = subject
         msg["From"] = f"{self.from_name} <{self.from_email}>"
-        msg["To"] = to_email
+        msg["To"] = str(to_email)
+        msg.attach(MIMEText(text_content, MIME_TYPE_PLAIN))
+        msg.attach(MIMEText(html_content, MIME_TYPE_HTML))
 
-        # Add plain text and HTML parts
-        msg.attach(MIMEText(text_content, "plain"))
-        msg.attach(MIMEText(html_content, "html"))
+        # Send with retries
+        last_error: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                async with aiosmtplib.SMTP(
+                    hostname=self.host,
+                    port=self.port,
+                    use_tls=True,
+                ) as smtp:
+                    await smtp.login(self.username, self.password.get_secret_value())
+                    await smtp.send_message(msg)
+                    logger.info("Email sent to %s", to_email)
+                    return
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Attempt %d: Failed to send email to %s: %s",
+                    attempt + 1,
+                    to_email,
+                    str(e),
+                )
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
 
-        try:
-            async with aiosmtplib.SMTP(
-                hostname=self.host,
-                port=self.port,
-                use_tls=True,
-            ) as smtp:
-                await smtp.login(self.username, self.password)
-                await smtp.send_message(msg)
-                logger.info("Email sent successfully to %s", to_email)
-        except Exception as e:
-            logger.error("Failed to send email to %s: %s", to_email, str(e))
-            raise RuntimeError(f"Failed to send email: {e}") from e
+        assert last_error is not None
+        raise RuntimeError(f"Failed to send email after {MAX_RETRIES} attempts") from last_error
 
     async def send_verification_email(
         self,
         to_email: EmailStr,
         verification_code: str,
     ) -> None:
-        """Send secure email verification link.
-
-        Implements secure verification flow:
-        1. Generates verification URL
-        2. Creates email content
-        3. Includes expiration time
-        4. Adds security notices
-        5. Sends via secure SMTP
-        6. Logs verification attempt
+        """Send email verification link.
 
         Args:
-            to_email: User's validated email address
-            verification_code: Secure verification token
+            to_email: User's email
+            verification_code: Secure token
 
         Raises:
-            RuntimeError: If email sending fails
-
-        Security:
-            - Uses HTTPS URLs
-            - Includes expiration
-            - Adds security text
-            - Prevents URL injection
-            - Logs attempts
-            - Handles errors
+            RuntimeError: If sending fails
         """
-        subject = "Verify your email address"
+        # Validate inputs
+        assert verification_code, "Verification code required"
+
+        # Generate URL
         verification_url = urljoin(
             settings.APP_URL,
             f"{settings.VERIFICATION_URL_PATH}?code={verification_code}",
         )
 
-        text_content = f"""
-        Welcome to our service!
+        # Create content
+        text_content = (
+            f"Please verify your email:\n"
+            f"{verification_url}\n\n"
+            f"Link expires in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.\n\n"
+            f"If you didn't request this, ignore this email."
+        )
 
-        Please verify your email address by clicking the link below:
-        {verification_url}
-
-        This link will expire in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.
-
-        If you didn't create an account, you can safely ignore this email.
-
-        Best regards,
-        {self.from_name}
-        """
-
-        html_content = f"""
-        <html>
-            <body>
-                <h2>Welcome to our service!</h2>
-                <p>Please verify your email address by clicking the link below:</p>
-                <p>
-                    <a href="{verification_url}">Verify Email Address</a>
-                </p>
-                <p>This link will expire in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.</p>
-                <p>If you didn't create an account, you can safely ignore this email.</p>
-                <br>
-                <p>Best regards,<br>{self.from_name}</p>
-            </body>
-        </html>
-        """
+        html_content = (
+            f"<h2>Verify Your Email</h2>"
+            f"<p><a href='{verification_url}'>Click to Verify Email</a></p>"
+            f"<p>Link expires in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.</p>"
+            f"<p>If you didn't request this, ignore this email.</p>"
+        )
 
         await self._send_email(
             to_email=to_email,
-            subject=subject,
+            subject="Verify your email",
             html_content=html_content,
             text_content=text_content,
         )
@@ -257,76 +180,44 @@ class EmailService:
         to_email: EmailStr,
         reset_token: str,
     ) -> None:
-        """Send secure password reset link.
-
-        Implements secure password reset flow:
-        1. Generates reset URL with token
-        2. Creates email content
-        3. Includes expiration time
-        4. Adds security warnings
-        5. Sends via secure SMTP
-        6. Logs reset attempt
+        """Send password reset link.
 
         Args:
-            to_email: User's validated email address
-            reset_token: Secure reset token
+            to_email: User's email
+            reset_token: Secure token
 
         Raises:
-            RuntimeError: If email sending fails
-
-        Security:
-            - Uses HTTPS URLs
-            - Includes expiration
-            - Adds security warnings
-            - Prevents URL injection
-            - Logs attempts
-            - Handles errors
+            RuntimeError: If sending fails
         """
-        subject = "Reset your password"
+        # Validate inputs
+        assert reset_token, "Reset token required"
+
+        # Generate URL
         reset_url = urljoin(
             settings.APP_URL,
             f"{settings.PASSWORD_RESET_URL_PATH}?token={reset_token}",
         )
 
-        text_content = f"""
-        Hello,
+        # Create content
+        text_content = (
+            f"Reset your password:\n"
+            f"{reset_url}\n\n"
+            f"Link expires in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.\n\n"
+            f"If you didn't request this, change your password immediately."
+        )
 
-        We received a request to reset your password. Click the link below to set a new password:
-        {reset_url}
-
-        This link will expire in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.
-
-        If you didn't request a password reset, you can safely ignore this email.
-        Your password will remain unchanged.
-
-        Best regards,
-        {self.from_name}
-        """
-
-        html_content = f"""
-        <html>
-            <body>
-                <h2>Reset Your Password</h2>
-                <p>We received a request to reset your password. Click the link below to set a new password:</p>
-                <p>
-                    <a href="{reset_url}">Reset Password</a>
-                </p>
-                <p>This link will expire in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.</p>
-                <p>If you didn't request a password reset, you can safely ignore this email.<br>
-                Your password will remain unchanged.</p>
-                <br>
-                <p>Best regards,<br>{self.from_name}</p>
-            </body>
-        </html>
-        """
+        html_content = (
+            f"<h2>Reset Your Password</h2>"
+            f"<p><a href='{reset_url}'>Click to Reset Password</a></p>"
+            f"<p>Link expires in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.</p>"
+            f"<p>If you didn't request this, change your password immediately.</p>"
+        )
 
         await self._send_email(
             to_email=to_email,
-            subject=subject,
+            subject="Reset your password",
             html_content=html_content,
             text_content=text_content,
         )
 
-
-# Create global email service instance
 email_service = EmailService()
