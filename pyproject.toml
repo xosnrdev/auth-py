@@ -32,13 +32,6 @@ dev = [
     "types-python-jose>=3.3.4.20240106",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-include = ["app"]
-
 [tool.mypy]
 strict = true
 exclude = ["venv", ".venv", "alembic"]
