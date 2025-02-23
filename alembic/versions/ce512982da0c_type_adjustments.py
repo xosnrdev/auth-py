@@ -1,8 +1,8 @@
-"""initial migration
+"""type adjustments
 
-Revision ID: 2b67bb61fc3d
+Revision ID: ce512982da0c
 Revises: 
-Create Date: 2025-02-23 10:49:18.622664
+Create Date: 2025-02-23 18:39:01.742137
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '2b67bb61fc3d'
+revision: str = 'ce512982da0c'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -25,11 +25,13 @@ def upgrade() -> None:
     sa.Column('phone', sa.String(length=20), nullable=True),
     sa.Column('password_hash', sa.Text(), nullable=False),
     sa.Column('social_id', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
-    sa.Column('roles', postgresql.JSONB(astext_type=sa.Text()), server_default='["user"]', nullable=False, comment='User roles for RBAC (e.g., user, admin)'),
+    sa.Column('roles', postgresql.JSONB(astext_type=sa.Text()), server_default='["user"]', nullable=False),
     sa.Column('is_verified', sa.Boolean(), server_default='false', nullable=False),
     sa.Column('is_active', sa.Boolean(), server_default='true', nullable=False),
     sa.Column('verification_code', sa.String(length=32), nullable=True),
     sa.Column('verification_code_expires_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('reset_token', sa.String(length=64), nullable=True),
+    sa.Column('reset_token_expires_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('id', sa.Uuid(), server_default=sa.text('gen_random_uuid()'), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
@@ -37,6 +39,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
     op.create_index(op.f('ix_users_phone'), 'users', ['phone'], unique=True)
+    op.create_index(op.f('ix_users_reset_token'), 'users', ['reset_token'], unique=False)
     op.create_index(op.f('ix_users_verification_code'), 'users', ['verification_code'], unique=False)
     op.create_table('audit_logs',
     sa.Column('timestamp', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
@@ -62,6 +65,7 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_audit_logs_action'), table_name='audit_logs')
     op.drop_table('audit_logs')
     op.drop_index(op.f('ix_users_verification_code'), table_name='users')
+    op.drop_index(op.f('ix_users_reset_token'), table_name='users')
     op.drop_index(op.f('ix_users_phone'), table_name='users')
     op.drop_index(op.f('ix_users_email'), table_name='users')
     op.drop_table('users')
