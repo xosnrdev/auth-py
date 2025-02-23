@@ -1,8 +1,8 @@
-"""Phase 1: Initial schema with User and AuditLog models
+"""initial migration
 
-Revision ID: 0bce084d4400
+Revision ID: 2b67bb61fc3d
 Revises: 
-Create Date: 2025-02-22 01:10:57.877651
+Create Date: 2025-02-23 10:49:18.622664
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = '0bce084d4400'
+revision: str = '2b67bb61fc3d'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -25,6 +25,7 @@ def upgrade() -> None:
     sa.Column('phone', sa.String(length=20), nullable=True),
     sa.Column('password_hash', sa.Text(), nullable=False),
     sa.Column('social_id', postgresql.JSONB(astext_type=sa.Text()), server_default='{}', nullable=False),
+    sa.Column('roles', postgresql.JSONB(astext_type=sa.Text()), server_default='["user"]', nullable=False, comment='User roles for RBAC (e.g., user, admin)'),
     sa.Column('is_verified', sa.Boolean(), server_default='false', nullable=False),
     sa.Column('is_active', sa.Boolean(), server_default='true', nullable=False),
     sa.Column('verification_code', sa.String(length=32), nullable=True),

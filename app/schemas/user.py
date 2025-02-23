@@ -19,6 +19,7 @@ class UserBase(BaseModel):
                 "roles": ["user"],
             }
         },
+        populate_by_name=True,
     )
 
     email: EmailStr = Field(
@@ -62,6 +63,7 @@ class UserUpdate(BaseModel):
                 "is_verified": True,
             }
         },
+        populate_by_name=True,
     )
 
     phone: str | None = Field(
@@ -99,4 +101,23 @@ class UserResponse(UserBase, BaseSchema):
     social_id: dict[str, Any] = Field(
         description="User's social login IDs",
         examples=[{"google": "123", "apple": "456"}],
+    )
+
+
+class EmailRequest(BaseModel):
+    """Schema for email-only requests."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "email": "user@example.com"
+            }
+        },
+        populate_by_name=True,
+    )
+
+    email: str = Field(
+        description="Email address",
+        examples=["user@example.com"],
+        pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
     )

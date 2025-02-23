@@ -12,6 +12,7 @@ class BaseSchema(BaseModel):
     model_config = ConfigDict(
         from_attributes=True,  # Allow ORM model conversion
         json_schema_extra={"example": {}},  # Base for examples
+        populate_by_name=True,  # Allow population by alias
     )
 
     id: UUID
