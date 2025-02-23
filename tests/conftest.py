@@ -1,7 +1,7 @@
 """Test configuration and fixtures."""
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -17,18 +17,36 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.api.v1.auth.router import router as auth_router
-from app.core.config import get_settings
 from app.core.middleware import RateLimitMiddleware
 from app.core.security import get_password_hash
 from app.db.base import get_db
 from app.models import User
 from app.models.base import Base
 
+###########################
+# Testcontainers fixtures
+###########################
+
+@pytest.fixture(scope="session")
+def postgres_container() -> Generator[Any]:
+    from testcontainers.postgres import PostgresContainer
+    with PostgresContainer("postgres:17.3-alpine3.21") as postgres:
+        yield postgres
+
+@pytest.fixture(scope="session")
+def redis_container() -> Generator[Any]:
+    from testcontainers.redis import RedisContainer
+    with RedisContainer("redis:7.4.2-alpine3.21") as redis_cont:
+        yield redis_cont
+
 
 @pytest.fixture(scope="function")
-async def redis_client() -> AsyncGenerator[Redis]:
-    """Create a Redis client for testing."""
-    client = Redis.from_url(get_settings().REDIS_URI.unicode_string())
+async def redis_client(redis_container: Any) -> AsyncGenerator[Redis]:
+    """Create a Redis client for testing using testcontainers."""
+    client = Redis(
+        host=redis_container.get_container_host_ip(),
+        port=int(redis_container.get_exposed_port(6379))
+    )
     connection_pool: Any = client.connection_pool
     connection_pool.loop = asyncio.get_running_loop()
     try:
@@ -42,11 +60,13 @@ async def redis_client() -> AsyncGenerator[Redis]:
 
 
 @pytest.fixture(scope="function")
-async def test_engine() -> AsyncGenerator[AsyncEngine]:
-    """Create test database engine."""
-    settings = get_settings()
+async def test_engine(postgres_container: Any) -> AsyncGenerator[AsyncEngine]:
+    """Create test database engine using the Postgres container with asyncpg driver."""
+    import re
+    url = postgres_container.get_connection_url()
+    url = re.sub(r"^postgresql(?:\+psycopg2)?://", "postgresql+asyncpg://", url)
     engine = create_async_engine(
-        settings.DATABASE_URI.unicode_string(),
+        url,
         echo=True,
         pool_pre_ping=True,
         isolation_level="REPEATABLE READ",

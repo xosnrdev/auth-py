@@ -26,6 +26,7 @@ dev = [
     "pytest-asyncio>=0.25.3",
     "pytest-cov>=6.0.0",
     "ruff>=0.9.7",
+    "testcontainers>=4.9.1",
     "types-authlib>=1.4.0.20241230",
     "types-python-jose>=3.3.4.20240106",
 ]
