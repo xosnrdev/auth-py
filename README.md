@@ -74,11 +74,11 @@ pip install -r requirements.txt
 cp .env.example .env
 # Add your settings to .env
 
-# Start Postgres and Redis
+# Start the services
 docker compose -f docker-compose.dev.yml up -d
 
 # Start coding!
-fastapi dev
+uvicorn app.main:app --reload
 ```
 
 ## Want to Help?

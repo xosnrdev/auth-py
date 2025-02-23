@@ -16,6 +16,7 @@ dependencies = [
     "python-jose[cryptography]>=3.4.0",
     "redis[hiredis]>=5.2.1",
     "sqlalchemy[asyncio]>=2.0.38",
+    "tomli>=2.2.1",
 ]
 
 [dependency-groups]

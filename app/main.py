@@ -1,44 +1,25 @@
-"""FastAPI application entry point with secure configuration.
+"""FastAPI application entry point.
 
-This module implements a secure FastAPI application following multiple RFCs:
-- HTTP/1.1 (RFC 9110)
-- HTTP Semantics (RFC 9112)
-- HTTP Authentication (RFC 7235)
-- OAuth2 (RFC 6749)
-- Bearer Tokens (RFC 6750)
-- Problem Details (RFC 7807)
-- CORS (Cross-Origin Resource Sharing)
-- Rate Limiting (RFC 6585)
-- Health Check (RFC Health Check Draft)
+The core of our auth service. This module sets up the FastAPI app with all the
+essential middleware, error handlers, and health checks you need to run in production.
 
-Core Features:
-1. Application Setup
-   - FastAPI configuration
-   - Database initialization
-   - Redis connection
-   - Router integration
-   - Middleware stack
+Key Features:
+- Database and Redis auto-setup
+- Rate limiting and CORS out of the box
+- Swagger docs with OAuth2 support
+- Health checks for k8s/docker
+- Proper cleanup on shutdown
 
-2. Security Features
-   - CORS protection
-   - Rate limiting
-   - Security headers
-   - Error handling
-   - Input validation
+Quick Start:
+```python
+# Run locally
+fast
 
-3. Documentation
-   - OpenAPI schema
-   - Swagger UI
-   - Security schemes
-   - Response examples
-   - Error formats
+# With Docker
+docker compose up -d
+```
 
-4. Monitoring
-   - Health checks
-   - Version tracking
-   - Status endpoints
-   - Database checks
-   - Redis checks
+Tip: Check /docs after startup for interactive API documentation.
 """
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -55,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.v1 import router as api_v1_router
 from app.core.errors import http_exception_handler, validation_exception_handler
+from app.core.metadata import load_project_metadata
 from app.core.middleware import (
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -64,41 +46,19 @@ from app.core.redis import close_redis, init_redis, redis
 from app.db.base import engine
 from app.models import Base
 
-API_VERSION = "1.0.0"
+# Load project metadata
+metadata = load_project_metadata()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-    """Lifespan context manager for FastAPI application.
+    """Sets up and tears down the app.
 
-    Implements secure application lifecycle management:
-    1. Database initialization
-       - Creates database tables
-       - Verifies connection
-       - Handles migrations
+    - Creates DB tables if they don't exist
+    - Initializes Redis connection pool
+    - Cleans up connections on shutdown
 
-    2. Redis setup
-       - Establishes connection
-       - Verifies connectivity
-       - Sets up session store
-
-    3. Cleanup
-       - Closes database connections
-       - Shuts down Redis client
-       - Releases resources
-
-    Args:
-        _: FastAPI application instance (unused)
-
-    Yields:
-        None: Control returns to FastAPI
-
-    Security:
-        - Safe database initialization
-        - Secure connection handling
-        - Proper resource cleanup
-        - Error isolation
+    Tip: Comment out `create_all()` if you're using migrations.
     """
-    # Startup
     try:
         # Initialize database
         async with engine.begin() as conn:
@@ -111,48 +71,22 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         yield
 
     finally:
-        # Shutdown
+        # Cleanup
         if isinstance(engine, AsyncEngine):
             await engine.dispose()
         await close_redis()
 
 
 def custom_openapi() -> dict[str, Any]:
-    """Generate custom OpenAPI schema with comprehensive documentation.
+    """Customizes the OpenAPI/Swagger documentation.
 
-    Implements OpenAPI 3.0 schema generation:
-    1. Base Configuration
-       - Title and version
-       - Description and terms
-       - Security schemes
-       - Server information
+    Adds:
+    - Auth flows with examples
+    - Error response formats
+    - Rate limit details
+    - Security schemes
 
-    2. Authentication Flows
-       - Email/password flow
-       - Social authentication
-       - Token management
-       - Session handling
-
-    3. Security Schemes
-       - Bearer authentication
-       - OAuth2 flows
-       - PKCE support
-       - Token formats
-
-    4. Response Examples
-       - Success responses
-       - Error formats
-       - Validation errors
-       - Rate limit errors
-
-    Returns:
-        dict: Complete OpenAPI schema
-
-    Security:
-        - Documents security schemes
-        - Includes error responses
-        - Shows rate limits
-        - Describes headers
+    Pro tip: Check /docs to see it in action.
     """
     if app.openapi_schema:
         return app.openapi_schema
@@ -161,39 +95,27 @@ def custom_openapi() -> dict[str, Any]:
         title=app.title,
         version=app.version,
         description="""
-        # Authentication Service API Documentation
+        # Authentication Service API
 
-        This API provides authentication and user management functionality following RFC standards.
+        ## Quick Start
+        1. Register: `POST /api/v1/auth/register`
+        2. Verify email: `POST /api/v1/auth/verify-email`
+        3. Login: `POST /api/v1/auth/login`
+        4. Use the token: `Authorization: Bearer <token>`
 
-        ## Authentication Flows
+        ## Rate Limits
+        Check response headers:
+        - `X-RateLimit-Limit`: Max requests
+        - `X-RateLimit-Remaining`: Requests left
+        - `X-RateLimit-Reset`: Reset time
 
-        ### Email/Password Authentication
-        1. Register a new account (`POST /api/v1/auth/register`)
-        2. Verify email using the code sent (`POST /api/v1/auth/verify-email`)
-        3. Login to get access token (`POST /api/v1/auth/login`)
-        4. Use access token in Authorization header (`Bearer <token>`)
-        5. Refresh token when expired (`POST /api/v1/auth/refresh`)
-
-        ### Social Authentication
-        1. Get authorization URL (`GET /api/v1/auth/social/{provider}/authorize`)
-        2. Complete OAuth flow (`GET /api/v1/auth/social/{provider}/callback`)
-        3. Use returned access token
-
-        ## Rate Limiting
-        All endpoints are rate limited. Limits are specified in headers:
-        - `X-RateLimit-Limit`: Maximum requests allowed
-        - `X-RateLimit-Remaining`: Requests remaining
-        - `X-RateLimit-Reset`: Timestamp when limit resets
-        - `X-RateLimit-Window`: Time window for limit
-
-        ## Error Responses
-        All error responses follow RFC 7807 Problem Details format:
+        ## Error Format
         ```json
         {
-            "type": "https://example.com/problems/constraint-violation",
-            "title": "The request parameters failed validation",
+            "type": "error_type",
+            "title": "Human readable error",
             "status": 400,
-            "detail": "Password must be at least 8 characters long",
+            "detail": "What went wrong",
             "instance": "/api/v1/auth/register"
         }
         ```
@@ -207,90 +129,67 @@ def custom_openapi() -> dict[str, Any]:
             "type": "http",
             "scheme": "bearer",
             "bearerFormat": "JWT",
-            "description": "JWT token obtained from login or social auth",
+            "description": "JWT token from login or social auth",
         }
     }
 
     # Add response examples
     openapi_schema["components"]["examples"] = {
         "TokenResponse": {
-            "summary": "Successful authentication response",
+            "summary": "Successful auth response",
             "value": {
-                "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+                "access_token": "eyJ0eXAi...",
                 "token_type": "Bearer",
                 "expires_in": 900,
                 "refresh_token": "def502...",
             },
         },
         "ValidationError": {
-            "summary": "Validation error response",
+            "summary": "Validation error",
             "value": {
-                "type": "https://fastapi.tiangolo.com/tutorial/handling-errors/#validation-errors",
-                "title": "Request Validation Error",
+                "type": "validation_error",
+                "title": "Validation Error",
                 "status": 422,
-                "detail": "The request parameters failed validation",
+                "detail": "Password too short",
                 "instance": "/api/v1/auth/register",
                 "errors": [
                     {
                         "loc": ["body", "password"],
-                        "msg": "Password must be at least 8 characters long",
+                        "msg": "min length 8",
                         "type": "value_error",
                     }
                 ],
             },
         },
         "RateLimitError": {
-            "summary": "Rate limit exceeded error",
+            "summary": "Rate limit hit",
             "value": {
-                "type": "https://tools.ietf.org/html/rfc6585#section-4",
+                "type": "rate_limit",
                 "title": "Too Many Requests",
                 "status": 429,
-                "detail": "Rate limit exceeded. Please wait 30 seconds before retrying.",
+                "detail": "Try again in 30 seconds",
                 "instance": "/api/v1/auth/login",
             },
         },
     }
 
     app.openapi_schema = openapi_schema
-    return app.openapi_schema
+    return openapi_schema
 
 
 app = FastAPI(
-    title="Authentication Service",
-    description="RFC IETF Compliant Authentication Service",
-    version=API_VERSION,
+    title=metadata["name"],
+    description=metadata["description"],
+    version=metadata["version"],
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
 )
 
-# Custom documentation endpoints
+# Custom docs endpoint
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html() -> Response:
-    """Serve custom Swagger UI with enhanced security.
-
-    Implements secure API documentation:
-    1. Custom Swagger UI
-       - Latest version
-       - Security features
-       - CORS protection
-       - XSS prevention
-
-    2. OAuth2 Support
-       - Redirect handling
-       - Token management
-       - Flow visualization
-       - Scope display
-
-    Returns:
-        Response: Swagger UI HTML page
-
-    Security:
-        - Uses secure CDN
-        - Implements CSP
-        - Prevents XSS
-        - CORS protected
-    """
+    """Serves Swagger UI with our custom theme and OAuth2 support."""
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title=app.title,
@@ -317,45 +216,18 @@ async def add_api_version_header(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
-    """Add API version header to all responses.
-
-    Implements API versioning:
-    1. Version Header
-       - Adds X-API-Version
-       - Tracks API version
-       - Supports clients
-       - Enables monitoring
-
-    2. Request Processing
-       - Intercepts responses
-       - Adds headers
-       - Maintains chain
-       - Handles errors
-
-    Args:
-        request: Incoming HTTP request
-        call_next: Next middleware in chain
-
-    Returns:
-        Response: Modified response with version header
-
-    Security:
-        - Safe header addition
-        - Error handling
-        - Chain preservation
-        - Version tracking
-    """
+    """Adds API version header to help with client debugging."""
     response = await call_next(request)
-    response.headers["X-API-Version"] = API_VERSION
+    response.headers["X-API-Version"] = metadata["version"]
     return response
 
-# Security middleware stack (order matters)
-# Add security headers first
-# Rate limiting last to avoid unnecessary processing
+# Security middleware (order matters)
+# Security headers first
+# Rate limiting last
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
-# CORS middleware with secure defaults
+# CORS with secure defaults
 setup_cors(app)
 
 # Include API routes
@@ -363,37 +235,16 @@ app.include_router(api_v1_router, prefix="/api")
 
 @app.get("/health")
 async def health_check() -> dict[str, str | dict[str, str]]:
-    """Health check endpoint following RFC health check standard.
+    """Health check for k8s/docker.
 
-    Implements comprehensive health checking:
-    1. Service Health
-       - Overall status
-       - Version info
-       - Timestamp
-       - Component status
+    Checks:
+    - Database connection
+    - Redis connection
+    - Overall service status
 
-    2. Database Check
-       - Connection test
-       - Query execution
-       - Pool status
-       - Migration state
-
-    3. Redis Check
-       - Connection test
-       - Ping response
-       - Pool status
-       - Cache state
-
-    Returns:
-        dict: Health check response with component status
-
-    Security:
-        - Safe checks
-        - Limited info
-        - Error handling
-        - Status tracking
+    Returns 200 if everything's good, 500 if not.
     """
-    # Check database connection
+    # Check database
     db_healthy = True
     try:
         async with engine.begin() as conn:
@@ -401,7 +252,7 @@ async def health_check() -> dict[str, str | dict[str, str]]:
     except Exception:
         db_healthy = False
 
-    # Check Redis connection
+    # Check Redis
     redis_healthy = True
     try:
         await redis.ping()
@@ -412,7 +263,7 @@ async def health_check() -> dict[str, str | dict[str, str]]:
 
     return {
         "status": status,
-        "version": API_VERSION,
+        "version": metadata["version"],
         "timestamp": datetime.now(UTC).isoformat(),
         "checks": {
             "database": "up" if db_healthy else "down",
@@ -422,21 +273,5 @@ async def health_check() -> dict[str, str | dict[str, str]]:
 
 @app.get("/")
 async def read_root() -> dict[str, str]:
-    """Root endpoint for basic service information.
-
-    Implements service discovery:
-    1. Service Info
-       - Service name
-       - Running status
-       - Basic health
-       - Entry point
-
-    Returns:
-        dict: Service status message
-
-    Security:
-        - Limited info
-        - Safe response
-        - Error handling
-    """
+    """Root endpoint - useful for quick connection tests."""
     return {"message": "Authentication Service is running"}

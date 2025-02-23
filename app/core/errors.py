@@ -46,7 +46,10 @@ class ProblemDetail(BaseModel):
     )
 
 
-async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+async def http_exception_handler(
+    request: Request,
+    exc: HTTPException,
+) -> JSONResponse:
     """Convert HTTPException to RFC 7807 Problem Details."""
     problem = ProblemDetail(
         type=f"https://httpstatuses.com/{exc.status_code}",
