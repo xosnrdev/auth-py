@@ -6,6 +6,7 @@ from secrets import token_hex
 
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.auth.dependencies import CurrentUser, DBSession
 from app.core import email_service
@@ -13,7 +14,7 @@ from app.core.config import settings
 from app.core.redis import redis
 from app.core.security import get_password_hash
 from app.models import AuditLog, User
-from app.schemas import UserCreate, UserResponse, UserUpdate
+from app.schemas import EmailRequest, UserCreate, UserResponse, UserUpdate
 from app.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -38,21 +39,44 @@ async def register(
             detail="Email already registered",
         )
 
+    # Check if phone exists (if provided)
+    if user_in.phone:
+        stmt = select(User).where(User.phone == user_in.phone)
+        result = await db.execute(stmt)
+        existing_phone = result.scalar_one_or_none()
+        if existing_phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number already registered",
+            )
+
     # Generate verification code
     verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
     verification_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
 
     # Create user
-    db_user = User(
-        email=user_in.email,
-        phone=user_in.phone,
-        password_hash=get_password_hash(user_in.password),
-        verification_code=verification_code,
-        verification_code_expires_at=verification_expires,
-    )
-    db.add(db_user)
-    await db.commit()
-    await db.refresh(db_user)
+    try:
+        db_user = User(
+            email=user_in.email,
+            phone=user_in.phone,
+            password_hash=get_password_hash(user_in.password),
+            verification_code=verification_code,
+            verification_code_expires_at=verification_expires,
+        )
+        db.add(db_user)
+        await db.commit()
+        await db.refresh(db_user)
+    except IntegrityError as e:
+        await db.rollback()
+        error_detail = "Registration failed due to a conflict"
+        if "ix_users_email" in str(e):
+            error_detail = "Email already registered"
+        elif "ix_users_phone" in str(e):
+            error_detail = "Phone number already registered"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_detail,
+        ) from e
 
     # Log registration
     audit_log = AuditLog(
@@ -347,3 +371,69 @@ async def get_account_activity(
         "details": log.details,
         "timestamp": int(log.timestamp.timestamp()),
     } for log in logs]
+
+
+@router.post("/verify-email/resend", response_model=dict[str, str])
+async def resend_verification_email_public(
+    request: Request,
+    email_in: EmailRequest,
+    db: DBSession,
+) -> dict[str, str]:
+    """Resend verification email to any unverified user.
+
+    This endpoint is public and does not require authentication.
+    It will only work for unverified users to prevent email spam.
+    """
+    # Find user by email
+    stmt = select(User).where(User.email == email_in.email.lower())
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        # Return success even if user doesn't exist to prevent email enumeration
+        return {"message": "If the email exists and is unverified, a new verification email has been sent"}
+
+    if user.is_verified:
+        # Return success even if already verified to prevent email enumeration
+        return {"message": "If the email exists and is unverified, a new verification email has been sent"}
+
+    # Generate new verification code
+    verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
+    verification_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
+
+    # Update user
+    user.verification_code = verification_code
+    user.verification_code_expires_at = verification_expires
+
+    # Send verification email
+    try:
+        await email_service.send_verification_email(
+            to_email=user.email,
+            verification_code=verification_code,
+        )
+    except Exception as e:
+        logger.error("Failed to send verification email: %s", str(e))
+        # Log error but return success to prevent email enumeration
+        error_log = AuditLog(
+            user_id=user.id,
+            action="resend_verification_email",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            details=f"Failed to send verification email: {str(e)}",
+        )
+        db.add(error_log)
+        await db.commit()
+        return {"message": "If the email exists and is unverified, a new verification email has been sent"}
+
+    # Log action
+    audit_log = AuditLog(
+        user_id=user.id,
+        action="resend_verification",
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        details="Requested new verification email",
+    )
+    db.add(audit_log)
+
+    await db.commit()
+    return {"message": "If the email exists and is unverified, a new verification email has been sent"}
