@@ -67,6 +67,17 @@ class User(Base):
         nullable=True,
     )
 
+    # Password reset
+    reset_token: Mapped[str | None] = mapped_column(
+        String(64),  # Store reset token
+        nullable=True,
+        index=True,
+    )
+    reset_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     def has_role(self, role: str) -> bool:
         """Check if user has a specific role.
 

@@ -121,3 +121,47 @@ class EmailRequest(BaseModel):
         examples=["user@example.com"],
         pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
     )
+
+
+class PasswordResetRequest(BaseModel):
+    """Schema for requesting a password reset."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "email": "user@example.com"
+            }
+        },
+        populate_by_name=True,
+    )
+
+    email: EmailStr = Field(
+        description="Email address of the account to reset",
+        examples=["user@example.com"],
+    )
+
+
+class PasswordResetVerify(BaseModel):
+    """Schema for verifying a password reset token."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "token": "abc123...",
+                "password": "newP@ssw0rd"
+            }
+        },
+        populate_by_name=True,
+    )
+
+    token: str = Field(
+        description="Password reset token received via email",
+        min_length=32,
+        max_length=64,
+    )
+    password: str = Field(
+        description="New password",
+        min_length=8,
+        max_length=72,  # bcrypt limit
+        examples=["newP@ssw0rd"],
+    )
