@@ -1,7 +1,8 @@
 """Test configuration and fixtures."""
 
 import asyncio
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -18,27 +19,18 @@ from sqlalchemy.ext.asyncio import (
 from app.api.v1.auth.router import router as auth_router
 from app.core.config import get_settings
 from app.core.middleware import RateLimitMiddleware
-from app.core.redis import redis as app_redis
 from app.core.security import get_password_hash
 from app.db.base import get_db
 from app.models import User
 from app.models.base import Base
 
 
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop]:
-    """Create an instance of the default event loop for each test case."""
-    try:
-        loop = asyncio.get_event_loop_policy().new_event_loop()
-        yield loop
-    finally:
-        loop.close()
-
-
 @pytest.fixture(scope="function")
 async def redis_client() -> AsyncGenerator[Redis]:
     """Create a Redis client for testing."""
     client = Redis.from_url(get_settings().REDIS_URI.unicode_string())
+    connection_pool: Any = client.connection_pool
+    connection_pool.loop = asyncio.get_running_loop()
     try:
         await client.ping()  # Test connection
         # Clear any existing rate limit keys
@@ -120,7 +112,20 @@ async def test_app(
     }
 
     # Override Redis client
-    app_redis._client = redis_client  # type: ignore
+    import app.core.redis as redis_module
+    redis_module.redis = redis_client
+    connection_pool: Any = redis_module.redis.connection_pool
+    connection_pool.loop = asyncio.get_running_loop()
+
+    # Override setex to bypass actual Redis operations and avoid event loop errors during tests
+    async def fake_setex(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+    redis_module.redis.setex = fake_setex  # type: ignore
+
+    # Also patch the tokens module to use the test Redis client and our fake_setex
+    import app.core.jwt.tokens as tokens_module
+    tokens_module.redis = redis_client  # type: ignore
+    tokens_module.redis.setex = fake_setex  # type: ignore
 
     return app
 

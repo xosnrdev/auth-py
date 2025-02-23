@@ -7,7 +7,7 @@ A secure, RFC-compliant authentication service built with FastAPI, providing bot
 - 🔐 **Secure Authentication**
   - JWT-based authentication with access and refresh tokens
   - Password hashing with bcrypt
-  - CSRF protection and secure session management
+  <!-- - CSRF protection and secure session management -->
 
 - 🌐 **Social Authentication**
   - Google OAuth2 integration

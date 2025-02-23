@@ -15,6 +15,8 @@ asyncpg==0.30.0
     # via auth-py (pyproject.toml)
 authlib==1.4.1
     # via auth-py (pyproject.toml)
+bcrypt==4.2.1
+    # via auth-py (pyproject.toml)
 certifi==2025.1.31
     # via
     #   httpcore
