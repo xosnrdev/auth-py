@@ -9,6 +9,8 @@ from app.schemas.token import (
 )
 from app.schemas.user import (
     EmailRequest,
+    PasswordResetRequest,
+    PasswordResetVerify,
     UserBase,
     UserCreate,
     UserResponse,
@@ -23,6 +25,8 @@ __all__ = [
     "UserCreate",
     "UserUpdate",
     "UserResponse",
+    "PasswordResetRequest",
+    "PasswordResetVerify",
     # Audit
     "AuditLogBase",
     "AuditLogCreate",
