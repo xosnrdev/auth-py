@@ -592,12 +592,12 @@ async def revoke_all_sessions(
     return {"message": "All other sessions have been revoked"}
 
 
-@router.get("/me/audit-log", response_model=list[dict[str, str | int]])
+@router.get("/me/audit-log", response_model=list[dict[str, str | int | None]])
 async def get_account_activity(
     current_user: CurrentUser,
     db: DBSession,
     limit: int = 50,
-) -> list[dict[str, str | int]]:
+) -> list[dict[str, str | int | None]]:
     """Get recent account activity with filtering.
 
     Implements secure activity logging:
