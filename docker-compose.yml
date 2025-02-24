@@ -60,6 +60,13 @@ services:
       redis:
         condition: service_started
 
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:${API_PORT:-8000}/health" ]
+      interval: 1m30s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+
   postgres:
     image: postgres:17.3-alpine3.21
     ports:

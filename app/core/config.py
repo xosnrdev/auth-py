@@ -96,6 +96,25 @@ class Settings(BaseSettings):
         }
     )
 
+    # Project metadata
+    PROJECT_NAME: str = Field(
+        default="Auth-Py",
+        description="Project name for API docs and metadata",
+        min_length=1,
+        max_length=100,
+    )
+    PROJECT_VERSION: str = Field(
+        default="0.1.0",
+        description="Project version in semver format",
+        pattern=r"^\d+\.\d+\.\d+$",
+    )
+    PROJECT_DESCRIPTION: str = Field(
+        default="Authentication Service API",
+        description="Project description for API docs",
+        min_length=1,
+        max_length=1000,
+    )
+
     # Application settings
     APP_URL: str = Field(
         default="http://localhost:3000",
