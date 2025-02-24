@@ -40,7 +40,7 @@ from app.schemas.base import BaseSchema
 
 # Constants
 MAX_ACTION_LENGTH: Final[int] = 50
-MAX_IP_LENGTH: Final[int] = 45  # IPv6 max length
+MAX_IP_LENGTH: Final[int] = 45
 MAX_USER_AGENT_LENGTH: Final[int] = 512
 MAX_DETAILS_LENGTH: Final[int] = 1024
 

@@ -425,7 +425,7 @@ async def request_password_reset(
 
     # Generate reset token
     reset_token = token_hex(settings.VERIFICATION_CODE_LENGTH)
-    reset_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
+    reset_expires = datetime.now(UTC) + timedelta(seconds=settings.VERIFICATION_CODE_EXPIRES_SECS)
 
     # Update user
     user.reset_token = reset_token
