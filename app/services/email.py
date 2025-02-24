@@ -157,14 +157,14 @@ class EmailService:
         text_content = (
             f"Please verify your email:\n"
             f"{verification_url}\n\n"
-            f"Link expires in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.\n\n"
+            f"Link expires in {settings.VERIFICATION_CODE_EXPIRES_SECS} hours.\n\n"
             f"If you didn't request this, ignore this email."
         )
 
         html_content = (
             f"<h2>Verify Your Email</h2>"
             f"<p><a href='{verification_url}'>Click to Verify Email</a></p>"
-            f"<p>Link expires in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.</p>"
+            f"<p>Link expires in {settings.VERIFICATION_CODE_EXPIRES_SECS} hours.</p>"
             f"<p>If you didn't request this, ignore this email.</p>"
         )
 
@@ -202,14 +202,14 @@ class EmailService:
         text_content = (
             f"Reset your password:\n"
             f"{reset_url}\n\n"
-            f"Link expires in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.\n\n"
+            f"Link expires in {settings.VERIFICATION_CODE_EXPIRES_SECS} hours.\n\n"
             f"If you didn't request this, change your password immediately."
         )
 
         html_content = (
             f"<h2>Reset Your Password</h2>"
             f"<p><a href='{reset_url}'>Click to Reset Password</a></p>"
-            f"<p>Link expires in {settings.VERIFICATION_CODE_EXPIRES_HOURS} hours.</p>"
+            f"<p>Link expires in {settings.VERIFICATION_CODE_EXPIRES_SECS} hours.</p>"
             f"<p>If you didn't request this, change your password immediately.</p>"
         )
 

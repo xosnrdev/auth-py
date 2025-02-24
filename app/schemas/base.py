@@ -10,8 +10,8 @@ user = User(
     id="123e4567-e89b-12d3-a456-426614174000",
     name="John Doe",
     email="john@example.com",
-    created_at="2024-02-23T10:20:30.123Z",  # ISO format
-    updated_at="2024-02-23T10:20:30.123Z"   # ISO format
+    created_at="2025-02-23T10:20:30.123Z",  # ISO format
+    updated_at="2025-02-23T10:20:30.123Z"   # ISO format
 )
 ```
 
@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Constants
 EXAMPLE_UUID: Final[str] = "123e4567-e89b-12d3-a456-426614174000"
-EXAMPLE_TIMESTAMP: Final[str] = "2024-02-23T10:20:30.123Z"
+EXAMPLE_TIMESTAMP: Final[str] = "2025-02-23T10:20:30.123Z"
 
 
 class BaseSchema(BaseModel):

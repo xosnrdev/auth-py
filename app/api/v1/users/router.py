@@ -114,7 +114,7 @@ async def register(
         # Create verification token
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
         verification_expires = datetime.now(UTC) + timedelta(
-            hours=settings.VERIFICATION_CODE_EXPIRES_HOURS
+            seconds=settings.VERIFICATION_CODE_EXPIRES_SECS
         )
 
         # Create user
@@ -166,11 +166,10 @@ async def register(
             detail=str(e),
         )
     except IntegrityError as e:
-        await db.rollback()
         logger.error("Registration failed: %s", str(e))
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Registration failed. Please try again.",
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email or phone number already registered",
         )
 
 
@@ -286,49 +285,40 @@ async def update_profile(
             - 400: Invalid data
             - 409: Phone number already registered
     """
-    try:
-        # Check phone uniqueness if being updated
-        if user_update.phone:
-            stmt = select(User).where(
-                User.phone == user_update.phone,
-                User.id != current_user.id,
+    # Check phone uniqueness if being updated
+    if user_update.phone:
+        stmt = select(User).where(
+            User.phone == user_update.phone,
+            User.id != current_user.id,
+        )
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number already registered",
             )
-            result = await db.execute(stmt)
-            existing = result.scalar_one_or_none()
-            if existing:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Phone number already registered",
-                )
 
-        # Update fields
-        for field, value in user_update.model_dump(exclude_unset=True).items():
-            if field == "password":
-                current_user.password_hash = get_password_hash(value)
-            else:
-                setattr(current_user, field, value)
+    # Update fields
+    for field, value in user_update.model_dump(exclude_unset=True).items():
+        if field == "password":
+            current_user.password_hash = get_password_hash(value)
+        else:
+            setattr(current_user, field, value)
 
-        # Log update
-        audit_log = AuditLog(
-            user_id=current_user.id,
-            action="update_profile",
-            ip_address=get_client_ip(request),
-            user_agent=request.headers.get("user-agent", ""),
-            details="Profile updated successfully",
-        )
-        db.add(audit_log)
-        await db.commit()
-        await db.refresh(current_user)
+    # Log update
+    audit_log = AuditLog(
+        user_id=current_user.id,
+        action="update_profile",
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        details="Profile updated successfully",
+    )
+    db.add(audit_log)
+    await db.commit()
+    await db.refresh(current_user)
 
-        return current_user
-
-    except IntegrityError as e:
-        await db.rollback()
-        logger.error("Profile update failed: %s", str(e))
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Update failed. Please try again.",
-        )
+    return current_user
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
@@ -398,7 +388,7 @@ async def resend_verification(
         # Generate new code
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
         verification_expires = datetime.now(UTC) + timedelta(
-            hours=settings.VERIFICATION_CODE_EXPIRES_HOURS
+            seconds=settings.VERIFICATION_CODE_EXPIRES_SECS
         )
 
         # Update user
@@ -486,7 +476,7 @@ async def resend_verification_public(
         # Generate new code
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
         verification_expires = datetime.now(UTC) + timedelta(
-            hours=settings.VERIFICATION_CODE_EXPIRES_HOURS
+            seconds=settings.VERIFICATION_CODE_EXPIRES_SECS
         )
 
         # Update user
@@ -559,78 +549,69 @@ async def request_email_change(
             - 400: Invalid email or already in use
             - 409: Email already registered
     """
-    try:
-        # Check if email is different
-        new_email = email_in.email.lower()
-        if new_email == current_user.email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="New email must be different from current email",
-            )
-
-        # Check if email is available
-        stmt = select(User).where(User.email == new_email)
-        result = await db.execute(stmt)
-        existing = result.scalar_one_or_none()
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Email already registered",
-            )
-
-        # Generate verification code
-        verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
-        verification_expires = datetime.now(UTC) + timedelta(
-            hours=settings.VERIFICATION_CODE_EXPIRES_HOURS
+    # Check if email is different
+    new_email = email_in.email.lower()
+    if new_email == current_user.email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New email must be different from current email",
         )
 
-        # Update user with pending email change
-        current_user.verification_code = verification_code
-        current_user.verification_code_expires_at = verification_expires
-        current_user.pending_email = new_email
+    # Check if email is available
+    stmt = select(User).where(User.email == new_email)
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already registered",
+        )
 
-        # Log email change request
+    # Generate verification code
+    verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
+    verification_expires = datetime.now(UTC) + timedelta(
+        seconds=settings.VERIFICATION_CODE_EXPIRES_SECS
+    )
+
+    # Update user with pending email change
+    current_user.verification_code = verification_code
+    current_user.verification_code_expires_at = verification_expires
+    current_user.pending_email = new_email
+
+    # Log email change request
+    audit_log = AuditLog(
+        user_id=current_user.id,
+        action="request_email_change",
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        details=f"Requested email change to {new_email}",
+    )
+    db.add(audit_log)
+    await db.commit()
+
+    # Send verification email to new address
+    try:
+        await email_service.send_verification_email(
+            to_email=new_email,
+            verification_code=verification_code,
+        )
+    except Exception as e:
+        logger.error("Failed to send verification email: %s", str(e))
         audit_log = AuditLog(
             user_id=current_user.id,
-            action="request_email_change",
+            action="send_verification_email",
             ip_address=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
-            details=f"Requested email change to {new_email}",
+            details=f"Failed to send verification email: {str(e)}",
         )
         db.add(audit_log)
         await db.commit()
-
-        # Send verification email to new address
-        try:
-            await email_service.send_verification_email(
-                to_email=new_email,
-                verification_code=verification_code,
-            )
-        except Exception as e:
-            logger.error("Failed to send verification email: %s", str(e))
-            audit_log = AuditLog(
-                user_id=current_user.id,
-                action="send_verification_email",
-                ip_address=get_client_ip(request),
-                user_agent=request.headers.get("user-agent", ""),
-                details=f"Failed to send verification email: {str(e)}",
-            )
-            db.add(audit_log)
-            await db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send verification email",
-            )
-
-        return {"message": "Verification email sent to new address"}
-
-    except IntegrityError as e:
-        await db.rollback()
-        logger.error("Email change request failed: %s", str(e))
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email change request failed. Please try again.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send verification email",
         )
+
+    return {"message": "Verification email sent to new address"}
 
 
 @router.post("/me/email/verify", response_model=UserResponse)
@@ -662,89 +643,80 @@ async def verify_email_change(
             - 400: Invalid/expired code or no pending change
             - 409: Email taken during verification
     """
-    try:
-        # Validate state
-        if not current_user.pending_email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No pending email change",
-            )
-        if not current_user.verification_code:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No verification code found",
-            )
-        if current_user.verification_code != code:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid verification code",
-            )
-        if not current_user.verification_code_expires_at or current_user.verification_code_expires_at < datetime.now(UTC):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Verification code expired",
-            )
-
-        # Check if email is still available
-        stmt = select(User).where(
-            User.email == current_user.pending_email,
-            User.id != current_user.id,
+    # Validate state
+    if not current_user.pending_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No pending email change",
         )
-        result = await db.execute(stmt)
-        existing = result.scalar_one_or_none()
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Email already taken",
-            )
+    if not current_user.verification_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No verification code found",
+        )
+    if current_user.verification_code != code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid verification code",
+        )
+    if not current_user.verification_code_expires_at or current_user.verification_code_expires_at < datetime.now(UTC):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification code expired",
+        )
 
-        # Store old email for notification
-        old_email = current_user.email
+    # Check if email is still available
+    stmt = select(User).where(
+        User.email == current_user.pending_email,
+        User.id != current_user.id,
+    )
+    result = await db.execute(stmt)
+    existing = result.scalar_one_or_none()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Email already taken",
+        )
 
-        # Update user email
-        current_user.email = current_user.pending_email
-        current_user.pending_email = None
-        current_user.verification_code = None
-        current_user.verification_code_expires_at = None
-        current_user.is_verified = True
+    # Store old email for notification
+    old_email = current_user.email
 
-        # Log email change
+    # Update user email
+    current_user.email = current_user.pending_email
+    current_user.pending_email = None
+    current_user.verification_code = None
+    current_user.verification_code_expires_at = None
+    current_user.is_verified = True
+
+    # Log email change
+    audit_log = AuditLog(
+        user_id=current_user.id,
+        action="verify_email_change",
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        details=f"Changed email from {old_email} to {current_user.email}",
+    )
+    db.add(audit_log)
+    await db.commit()
+    await db.refresh(current_user)
+
+    # Notify old email about the change
+    try:
+        await email_service.send_email_change_notification(
+            to_email=old_email,
+            new_email=current_user.email,
+        )
+    except Exception as e:
+        logger.error("Failed to send change notification: %s", str(e))
+        # Log but don't fail the request
         audit_log = AuditLog(
             user_id=current_user.id,
-            action="verify_email_change",
+            action="send_email_change_notification",
             ip_address=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
-            details=f"Changed email from {old_email} to {current_user.email}",
+            details=f"Failed to send change notification: {str(e)}",
         )
         db.add(audit_log)
         await db.commit()
-        await db.refresh(current_user)
 
-        # Notify old email about the change
-        try:
-            await email_service.send_email_change_notification(
-                to_email=old_email,
-                new_email=current_user.email,
-            )
-        except Exception as e:
-            logger.error("Failed to send change notification: %s", str(e))
-            # Log but don't fail the request
-            audit_log = AuditLog(
-                user_id=current_user.id,
-                action="send_email_change_notification",
-                ip_address=get_client_ip(request),
-                user_agent=request.headers.get("user-agent", ""),
-                details=f"Failed to send change notification: {str(e)}",
-            )
-            db.add(audit_log)
-            await db.commit()
-
-        return current_user
-
-    except IntegrityError as e:
-        await db.rollback()
-        logger.error("Email change verification failed: %s", str(e))
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email change verification failed. Please try again.",
-        )
+    return current_user

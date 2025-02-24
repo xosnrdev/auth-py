@@ -15,9 +15,9 @@ log = AuditLogCreate(
 response = AuditLogResponse(
     **log.model_dump(),
     id="987fcdeb-...",
-    created_at="2024-02-23T10:20:30Z",
-    updated_at="2024-02-23T10:20:30Z",
-    timestamp="2024-02-23T10:20:30Z"
+    created_at="2025-02-23T10:20:30Z",
+    updated_at="2025-02-23T10:20:30Z",
+    timestamp="2025-02-23T10:20:30Z"
 )
 ```
 
@@ -40,7 +40,7 @@ from app.schemas.base import BaseSchema
 
 # Constants
 MAX_ACTION_LENGTH: Final[int] = 50
-MAX_IP_LENGTH: Final[int] = 45  # IPv6 max length
+MAX_IP_LENGTH: Final[int] = 45
 MAX_USER_AGENT_LENGTH: Final[int] = 512
 MAX_DETAILS_LENGTH: Final[int] = 1024
 
@@ -114,7 +114,7 @@ class AuditLogResponse(AuditLogBase, BaseSchema):
     """Audit log entry with timestamps."""
 
     timestamp: datetime = Field(
-        examples=["2024-02-23T10:20:30.123Z"],
+        examples=["2025-02-23T10:20:30.123Z"],
     )
     user_id: UUID = Field(
         examples=["123e4567-e89b-12d3-a456-426614174000"],

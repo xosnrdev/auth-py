@@ -249,20 +249,14 @@ class Settings(BaseSettings):
         ge=MIN_VERIFICATION_CODE_LENGTH,
         le=32,
     )
-    VERIFICATION_CODE_EXPIRES_HOURS: int = Field(
-        default=24,
+    VERIFICATION_CODE_EXPIRES_SECS: int = Field(
+        default=3600,
         gt=0,
-        le=72,
+        le=86400,
     )
     VERIFICATION_URL_PATH: str = Field(
         default="/verify-email",
         pattern=r"^/[a-zA-Z0-9\-/]+$",
-    )
-    VERIFICATION_RESEND_RATE_LIMIT: int = Field(
-        default=3600,  # 1 hour
-        gt=0,
-        le=86400,  # 24 hours
-        description="Rate limit window for verification email resend in seconds",
     )
     PASSWORD_RESET_URL_PATH: str = Field(
         default="/reset-password",

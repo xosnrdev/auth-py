@@ -318,7 +318,7 @@ async def health_check() -> dict[str, str | dict[str, str]]:
         "checks": {
             "database": "connected",
             "redis": "connected",
-            "timestamp": "2024-02-23T10:20:30Z"
+            "timestamp": "2025-02-23T10:20:30Z"
         }
     }
     ```

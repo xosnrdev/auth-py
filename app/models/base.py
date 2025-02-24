@@ -18,8 +18,8 @@ assert data == {
     "id": "123e4567...",  # UUID as hex
     "name": "Widget",
     "price": 9.99,
-    "created_at": "2024-02-23T...",  # UTC ISO format
-    "updated_at": "2024-02-23T..."   # UTC ISO format
+    "created_at": "2025-02-23T...",  # UTC ISO format
+    "updated_at": "2025-02-23T..."   # UTC ISO format
 }
 ```
 
