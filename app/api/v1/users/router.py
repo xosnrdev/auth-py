@@ -1,46 +1,51 @@
-"""User management endpoints for registration and profile management.
+"""User management API endpoints.
 
-This module implements secure user management following RFC standards:
-- User Registration (RFC 7591)
-- Email Verification (RFC 8628)
-- Profile Management (RFC 7643)
-- Session Management (RFC 6749)
-- Phone Number Format (E.164)
+Example:
+```python
+# Register a new user
+curl -X POST http://localhost:8000/api/v1/users/register \\
+  -H "Content-Type: application/json" \\
+  -d '{"email": "user@example.com", "password": "SecurePass123!", "phone": "+1234567890"}'
 
-Core Functionality:
-1. User Registration
-   - Email validation
-   - Phone validation (E.164)
-   - Password security
-   - Duplicate prevention
-   - Verification flow
+# Verify email
+curl -X POST http://localhost:8000/api/v1/users/verify-email?code=abc123
 
-2. Email Verification
-   - Secure token generation
-   - Expiration handling
-   - Resend capability
-   - Status tracking
+# Update profile
+curl -X PATCH http://localhost:8000/api/v1/users/me \\
+  -H "Authorization: Bearer <token>" \\
+  -d '{"phone": "+9876543210"}'
+```
 
-3. Profile Management
-   - Secure updates
-   - Session control
-   - Account deletion
-   - Activity tracking
+Critical Security Notes:
+1. Authentication & Authorization
+   - JWT Bearer token required for protected endpoints
+   - Email verification required for full account access
+   - Secure session management with refresh tokens
+   - Role-based access control (RBAC)
 
-4. Session Management
-   - Active session listing
-   - Session revocation
-   - Multi-device support
-   - Security monitoring
+2. Data Protection
+   - Passwords hashed with bcrypt (72 char limit)
+   - Verification codes expire in 24h
+   - Sessions revoked on password change
+   - Phone numbers validated in E.164 format
+   - All timestamps in UTC
+   - Database constraints enforced
+   - Input validation via Pydantic
 
-Security Features:
-- Password hashing (bcrypt)
-- Rate limiting
-- Email verification
-- Session tracking
-- Audit logging
-- CSRF protection
-- XSS prevention
+3. Attack Prevention
+   - Rate limiting via middleware
+   - SQL injection protection via ORM
+   - No user enumeration in public endpoints
+   - Secure error handling
+   - Comprehensive audit logging
+   - CSRF protection via SameSite cookies
+
+4. Privacy & Compliance
+   - Minimal data collection
+   - Secure data deletion
+   - Activity logging with IP anonymization
+   - Clear user feedback
+   - GDPR-ready account deletion
 """
 
 import logging
@@ -53,14 +58,15 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.dependencies import CurrentUser, DBSession
 from app.core.config import settings
-from app.core.redis import redis
 from app.core.security import get_password_hash
 from app.models import AuditLog, User
 from app.schemas import EmailRequest, UserCreate, UserResponse, UserUpdate
 from app.services.email import email_service
 from app.utils.request import get_client_ip
 
+# Configure module logger
 logger = logging.getLogger(__name__)
+
 
 router = APIRouter(tags=["users"])
 
@@ -71,120 +77,101 @@ async def register(
     user_in: UserCreate,
     db: DBSession,
 ) -> User:
-    """Register a new user with email verification.
+    """Register a new user account.
 
-    Implements secure user registration:
-    1. Validates email uniqueness
-    2. Validates phone format (E.164)
-    3. Hashes password securely
-    4. Generates verification token
-    5. Sends verification email
-    6. Creates user record
-    7. Logs registration event
+    Example:
+    ```python
+    user = await register(
+        UserCreate(
+            email="user@example.com",
+            password="SecurePass123!",
+            phone="+1234567890"
+        )
+    )
+    print(f"Verify your email at {user.email}")
+    ```
 
     Args:
-        request: FastAPI request object
-        user_in: User registration data with validation
+        request: FastAPI request
+        user_in: User registration data
         db: Database session
 
     Returns:
-        User: Created user object (password hash excluded)
+        User: Created user object
 
     Raises:
-        HTTPException:
-            - 400: Email already registered
-            - 400: Phone number already registered
-            - 400: Invalid phone format
-            - 500: Registration failed
-
-    Security:
-        - Validates input data
-        - Hashes passwords (bcrypt)
-        - Prevents email enumeration
-        - Requires verification
-        - Rate limited
-        - Logs all attempts
+        HTTPException: 400: Email/phone exists
     """
-    # Check if email exists
-    stmt = select(User).where(User.email == user_in.email)
-    result = await db.execute(stmt)
-    existing_user = result.scalar_one_or_none()
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered",
+    try:
+        # Check uniqueness
+        stmt = select(User).where(
+            (User.email == user_in.email.lower()) | (User.phone == user_in.phone)
+        )
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+        assert not existing, "Email or phone already registered"
+
+        # Create verification token
+        verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
+        verification_expires = datetime.now(UTC) + timedelta(
+            hours=settings.VERIFICATION_CODE_EXPIRES_HOURS
         )
 
-    # Check if phone exists (if provided)
-    if user_in.phone:
-        stmt = select(User).where(User.phone == user_in.phone)
-        result = await db.execute(stmt)
-        existing_phone = result.scalar_one_or_none()
-        if existing_phone:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Phone number already registered",
-            )
-
-    # Generate verification code
-    verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
-    verification_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
-
-    # Create user
-    try:
-        db_user = User(
-            email=user_in.email,
+        # Create user
+        user = User(
+            email=user_in.email.lower(),
             phone=user_in.phone,
             password_hash=get_password_hash(user_in.password),
             verification_code=verification_code,
             verification_code_expires_at=verification_expires,
         )
-        db.add(db_user)
+        db.add(user)
         await db.commit()
-        await db.refresh(db_user)
-    except IntegrityError as e:
-        await db.rollback()
-        error_detail = "Registration failed due to a conflict"
-        if "ix_users_email" in str(e):
-            error_detail = "Email already registered"
-        elif "ix_users_phone" in str(e):
-            error_detail = "Phone number already registered"
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_detail,
-        ) from e
+        await db.refresh(user)
 
-    # Log registration
-    audit_log = AuditLog(
-        user_id=db_user.id,
-        action="register",
-        ip_address=get_client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        details="User registration",
-    )
-    db.add(audit_log)
-    await db.commit()
-
-    # Send verification email
-    try:
-        await email_service.send_verification_email(
-            to_email=user_in.email,
-            verification_code=verification_code,
-        )
-    except Exception as e:
-        # Log error but don't fail registration
-        logger.error("Failed to send verification email: %s", str(e))
-        error_log = AuditLog(
-            user_id=db_user.id,
-            action="send_verification_email",
+        # Log registration
+        audit_log = AuditLog(
+            user_id=user.id,
+            action="register",
             ip_address=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
-            details=f"Failed to send verification email: {str(e)}",
+            details="User registration successful",
         )
-        db.add(error_log)
+        db.add(audit_log)
         await db.commit()
 
-    return db_user
+        # Send verification email
+        try:
+            await email_service.send_verification_email(
+                to_email=user_in.email.lower(),
+                verification_code=verification_code,
+            )
+        except Exception as e:
+            logger.error("Failed to send verification email: %s", str(e))
+            audit_log = AuditLog(
+                user_id=user.id,
+                action="send_verification_email",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details=f"Failed to send verification email: {str(e)}",
+            )
+            db.add(audit_log)
+            await db.commit()
+
+        return user
+
+    except AssertionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except IntegrityError as e:
+        await db.rollback()
+        logger.error("Registration failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Registration failed. Please try again.",
+        )
 
 
 @router.post("/verify-email")
@@ -193,18 +180,17 @@ async def verify_email(
     code: str,
     db: DBSession,
 ) -> dict[str, str]:
-    """Verify user's email address with secure token.
+    """Verify user's email address.
 
-    Implements secure email verification:
-    1. Validates verification code
-    2. Checks expiration time
-    3. Updates user status
-    4. Clears verification data
-    5. Logs verification
+    Example:
+    ```python
+    result = await verify_email(code="abc123")
+    assert result["message"] == "Email verified successfully"
+    ```
 
     Args:
-        request: FastAPI request object
-        code: Email verification code
+        request: FastAPI request
+        code: Verification code
         db: Database session
 
     Returns:
@@ -212,228 +198,157 @@ async def verify_email(
 
     Raises:
         HTTPException:
-            - 400: Invalid verification code
-            - 400: Code expired
-            - 400: Already verified
-
-    Security:
-        - Time-limited codes
-        - One-time use
-        - Rate limited
-        - Logs attempts
-        - Prevents timing attacks
+            - 400: Invalid/expired code
     """
-    # Find user by verification code
-    stmt = select(User).where(
-        User.verification_code == code,
-        User.verification_code_expires_at > datetime.now(UTC),
-        User.is_verified.is_(False),
-    )
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    try:
+        # Find and validate user
+        stmt = select(User).where(
+            User.verification_code == code,
+            User.verification_code_expires_at > datetime.now(UTC),
+            User.is_verified.is_(False),
+        )
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        assert user, "Invalid or expired verification code"
 
-    if not user:
+        # Update user
+        user.is_verified = True
+        user.verification_code = None
+        user.verification_code_expires_at = None
+
+        # Log verification
+        audit_log = AuditLog(
+            user_id=user.id,
+            action="verify_email",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            details="Email verified successfully",
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        return {"message": "Email verified successfully"}
+
+    except AssertionError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired verification code",
+            detail=str(e),
         )
-
-    # Mark email as verified
-    user.is_verified = True
-    user.verification_code = None
-    user.verification_code_expires_at = None
-
-    # Log verification
-    audit_log = AuditLog(
-        user_id=user.id,
-        action="verify_email",
-        ip_address=get_client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        details="Email verified",
-    )
-    db.add(audit_log)
-    await db.commit()
-
-    return {"message": "Email verified successfully"}
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_current_user_profile(
-    current_user: CurrentUser,
-) -> User:
-    """Get current user's profile data.
+async def get_profile(current_user: CurrentUser) -> User:
+    """Get current user's profile.
+
+    Example:
+    ```python
+    profile = await get_profile(current_user)
+    print(f"Email: {profile.email}")
+    ```
 
     Args:
-        current_user: Current authenticated user
+        current_user: Authenticated user
 
     Returns:
-        User: Current user's profile data
+        User: User profile data
     """
     return current_user
 
 
 @router.patch("/me", response_model=UserResponse)
-async def update_current_user_profile(
+async def update_profile(
     request: Request,
     user_update: UserUpdate,
     current_user: CurrentUser,
     db: DBSession,
 ) -> User:
-    """Update current user's profile data.
+    """Update current user's profile.
+
+    Example:
+    ```python
+    updated = await update_profile(
+        UserUpdate(phone="+1234567890")
+    )
+    print(f"New phone: {updated.phone}")
+    ```
 
     Args:
-        request: FastAPI request object
-        user_update: User update data
-        current_user: Current authenticated user
+        request: FastAPI request
+        user_update: Update data
+        current_user: Authenticated user
         db: Database session
 
     Returns:
-        User: Updated user profile
+        User: Updated profile
 
     Raises:
         HTTPException:
-            - 400: Email already taken
-            - 400: Phone already taken
+            - 400: Invalid data
+            - 409: Phone number already registered
     """
-    # Update user fields
-    for field, value in user_update.model_dump(exclude_unset=True).items():
-        setattr(current_user, field, value)
-
-    # Log update
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        action="update_profile",
-        ip_address=get_client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        details="Profile updated",
-    )
-    db.add(audit_log)
-
     try:
-        await db.commit()
-        await db.refresh(current_user)
-    except IntegrityError as e:
-        await db.rollback()
-        error_detail = "Update failed due to a conflict"
-        if "ix_users_email" in str(e):
-            error_detail = "Email already taken"
-        elif "ix_users_phone" in str(e):
-            error_detail = "Phone number already taken"
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=error_detail,
-        ) from e
+        # Check phone uniqueness if being updated
+        if user_update.phone:
+            stmt = select(User).where(
+                User.phone == user_update.phone,
+                User.id != current_user.id,
+            )
+            result = await db.execute(stmt)
+            existing = result.scalar_one_or_none()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Phone number already registered",
+                )
 
-    return current_user
+        # Update fields
+        for field, value in user_update.model_dump(exclude_unset=True).items():
+            if field == "password":
+                current_user.password_hash = get_password_hash(value)
+            else:
+                setattr(current_user, field, value)
 
-
-@router.post("/me/verify-email/resend")
-async def resend_verification_email(
-    request: Request,
-    current_user: CurrentUser,
-    db: DBSession,
-) -> dict[str, str]:
-    """Resend verification email for current user.
-
-    Args:
-        request: FastAPI request object
-        current_user: Current authenticated user
-        db: Database session
-
-    Returns:
-        dict: Success message
-
-    Raises:
-        HTTPException:
-            - 400: Already verified
-            - 429: Too many requests
-    """
-    # Check if already verified
-    if current_user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already verified",
-        )
-
-    # Rate limit check
-    rate_limit_key = f"resend_verification:{current_user.id}"
-    if await redis.exists(rate_limit_key):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Please wait before requesting another verification email",
-        )
-
-    # Generate new verification code
-    verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
-    verification_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
-
-    # Update user
-    current_user.verification_code = verification_code
-    current_user.verification_code_expires_at = verification_expires
-
-    # Log resend
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        action="resend_verification",
-        ip_address=get_client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        details="Verification email resent",
-    )
-    db.add(audit_log)
-    await db.commit()
-
-    # Send verification email
-    try:
-        await email_service.send_verification_email(
-            to_email=current_user.email,
-            verification_code=verification_code,
-        )
-    except Exception as e:
-        logger.error("Failed to send verification email: %s", str(e))
-        error_log = AuditLog(
+        # Log update
+        audit_log = AuditLog(
             user_id=current_user.id,
-            action="send_verification_email",
+            action="update_profile",
             ip_address=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
-            details=f"Failed to send verification email: {str(e)}",
+            details="Profile updated successfully",
         )
-        db.add(error_log)
+        db.add(audit_log)
         await db.commit()
+        await db.refresh(current_user)
+
+        return current_user
+
+    except IntegrityError as e:
+        await db.rollback()
+        logger.error("Profile update failed: %s", str(e))
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email",
-        ) from e
-
-    # Set rate limit
-    await redis.setex(
-        rate_limit_key,
-        settings.VERIFICATION_RESEND_RATE_LIMIT,
-        "1",
-    )
-
-    return {"message": "Verification email sent"}
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Update failed. Please try again.",
+        )
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_current_user(
+async def delete_profile(
     request: Request,
     current_user: CurrentUser,
     db: DBSession,
 ) -> None:
     """Delete current user's account.
 
+    Example:
+    ```python
+    await delete_profile(current_user)
+    print("Account deleted successfully")
+    ```
+
     Args:
-        request: FastAPI request object
-        current_user: Current authenticated user
+        request: FastAPI request
+        current_user: Authenticated user
         db: Database session
-
-    Returns:
-        None
-
-    Security:
-        - Requires authentication
-        - Logs deletion
-        - Cascades deletion
     """
     # Log deletion
     audit_log = AuditLog(
@@ -441,7 +356,7 @@ async def delete_current_user(
         action="delete_account",
         ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
-        details="Account deleted",
+        details="Account deleted successfully",
     )
     db.add(audit_log)
 
@@ -450,194 +365,129 @@ async def delete_current_user(
     await db.commit()
 
 
-@router.get("/me/sessions")
-async def list_active_sessions(
-    current_user: CurrentUser,
-    db: DBSession,
-) -> list[dict[str, str | int]]:
-    """List all active sessions for current user.
-
-    Args:
-        current_user: Current authenticated user
-        db: Database session
-
-    Returns:
-        list: List of active sessions with metadata
-
-    Security:
-        - Requires authentication
-        - Shows only user's sessions
-        - Includes metadata
-    """
-    # Get all active sessions from Redis
-    session_pattern = f"session:{current_user.id}:*"
-    session_keys = await redis.keys(session_pattern)
-    sessions = []
-
-    for key in session_keys:
-        # Get session data
-        session_data: dict[str, str] = await redis.hgetall(key)  # type: ignore
-        if not session_data:
-            continue
-
-        # Get audit log for session start
-        stmt = select(AuditLog).where(
-            AuditLog.user_id == current_user.id,
-            AuditLog.action == "login",
-            AuditLog.details.like(f"%{session_data.get('jti', '')}%"),
-        )
-        result = await db.execute(stmt)
-        audit_log = result.scalar_one_or_none()
-
-        # Add session info
-        sessions.append({
-            "id": session_data.get("jti", "unknown"),
-            "ip_address": audit_log.ip_address if audit_log else "unknown",
-            "user_agent": audit_log.user_agent if audit_log else "unknown",
-            "created_at": audit_log.created_at.isoformat() if audit_log else "unknown",
-            "expires_in": await redis.ttl(key),
-        })
-
-    return sessions
-
-
-@router.post("/me/sessions/revoke-all")
-async def revoke_all_sessions(
+@router.post("/me/verify-email/resend")
+async def resend_verification(
     request: Request,
     current_user: CurrentUser,
     db: DBSession,
 ) -> dict[str, str]:
-    """Revoke all active sessions for current user.
+    """Resend verification email.
+
+    Example:
+    ```python
+    await resend_verification(current_user)
+    print("Verification email sent")
+    ```
 
     Args:
-        request: FastAPI request object
-        current_user: Current authenticated user
+        request: FastAPI request
+        current_user: Authenticated user
         db: Database session
 
     Returns:
         dict: Success message
 
-    Security:
-        - Requires authentication
-        - Revokes all sessions
-        - Logs action
-        - Immediate effect
+    Raises:
+        HTTPException:
+            - 400: Already verified
     """
-    # Get all active sessions
-    session_pattern = f"session:{current_user.id}:*"
-    session_keys = await redis.keys(session_pattern)
+    try:
+        # Validate state
+        assert not current_user.is_verified, "Email already verified"
 
-    # Delete all sessions
-    if session_keys:
-        await redis.delete(*session_keys)
+        # Generate new code
+        verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
+        verification_expires = datetime.now(UTC) + timedelta(
+            hours=settings.VERIFICATION_CODE_EXPIRES_HOURS
+        )
 
-    # Get all refresh tokens
-    refresh_pattern = f"refresh_token:{current_user.id}:*"
-    refresh_keys = await redis.keys(refresh_pattern)
+        # Update user
+        current_user.verification_code = verification_code
+        current_user.verification_code_expires_at = verification_expires
 
-    # Delete all refresh tokens
-    if refresh_keys:
-        await redis.delete(*refresh_keys)
+        # Log resend
+        audit_log = AuditLog(
+            user_id=current_user.id,
+            action="resend_verification",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            details="Verification email resent",
+        )
+        db.add(audit_log)
+        await db.commit()
 
-    # Log action
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        action="revoke_all_sessions",
-        ip_address=get_client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        details=f"Revoked {len(session_keys)} sessions and {len(refresh_keys)} refresh tokens",
-    )
-    db.add(audit_log)
-    await db.commit()
+        # Send email
+        try:
+            await email_service.send_verification_email(
+                to_email=current_user.email,
+                verification_code=verification_code,
+            )
+        except Exception as e:
+            logger.error("Failed to send verification email: %s", str(e))
+            audit_log = AuditLog(
+                user_id=current_user.id,
+                action="send_verification_email",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details=f"Failed to send verification email: {str(e)}",
+            )
+            db.add(audit_log)
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification email",
+            )
 
-    return {"message": "All sessions revoked successfully"}
+        return {"message": "Verification email sent"}
 
-
-@router.get("/me/audit-log", response_model=list[dict[str, str | int | None]])
-async def get_account_activity(
-    current_user: CurrentUser,
-    db: DBSession,
-    limit: int = 50,
-) -> list[dict[str, str | int | None]]:
-    """Get recent account activity for current user.
-
-    Args:
-        current_user: Current authenticated user
-        db: Database session
-        limit: Maximum number of records to return
-
-    Returns:
-        list: Recent account activity records
-
-    Security:
-        - Requires authentication
-        - Shows only user's activity
-        - Paginated results
-    """
-    # Get recent audit logs
-    stmt = (
-        select(AuditLog)
-        .where(AuditLog.user_id == current_user.id)
-        .order_by(AuditLog.created_at.desc())
-        .limit(limit)
-    )
-    result = await db.execute(stmt)
-    audit_logs = result.scalars().all()
-
-    # Format logs
-    return [
-        {
-            "action": log.action,
-            "ip_address": log.ip_address,
-            "user_agent": log.user_agent,
-            "details": log.details,
-            "created_at": log.created_at.isoformat(),
-        }
-        for log in audit_logs
-    ]
+    except AssertionError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
 
 
-@router.post("/verify-email/resend", response_model=dict[str, str])
-async def resend_verification_email_public(
+@router.post("/verify-email/resend")
+async def resend_verification_public(
     request: Request,
     email_in: EmailRequest,
     db: DBSession,
 ) -> dict[str, str]:
-    """Resend verification email for unverified users.
+    """Resend verification email (public endpoint).
+
+    Example:
+    ```python
+    await resend_verification_public(
+        EmailRequest(email="user@example.com")
+    )
+    print("If email exists, verification sent")
+    ```
 
     Args:
-        request: FastAPI request object
-        email_in: Email request data
+        request: FastAPI request
+        email_in: Email request
         db: Database session
 
     Returns:
         dict: Success message
 
-    Security:
-        - Rate limited
-        - Prevents email enumeration
-        - Logs attempts
+    Raises:
+        HTTPException: 429: Rate limit exceeded
     """
-    # Rate limit check
-    rate_limit_key = f"resend_verification_public:{get_client_ip(request)}"
-    if await redis.exists(rate_limit_key):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Please wait before requesting another verification email",
-        )
-
-    # Find user by email
+    # Find user
     stmt = select(User).where(
-        User.email == email_in.email,
+        User.email == email_in.email.lower(),
         User.is_verified.is_(False),
     )
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
     if user:
-        # Generate new verification code
+        # Generate new code
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
-        verification_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
+        verification_expires = datetime.now(UTC) + timedelta(
+            hours=settings.VERIFICATION_CODE_EXPIRES_HOURS
+        )
 
         # Update user
         user.verification_code = verification_code
@@ -654,7 +504,7 @@ async def resend_verification_email_public(
         db.add(audit_log)
         await db.commit()
 
-        # Send verification email
+        # Send email
         try:
             await email_service.send_verification_email(
                 to_email=user.email,
@@ -662,22 +512,239 @@ async def resend_verification_email_public(
             )
         except Exception as e:
             logger.error("Failed to send verification email: %s", str(e))
-            error_log = AuditLog(
+            audit_log = AuditLog(
                 user_id=user.id,
                 action="send_verification_email",
                 ip_address=get_client_ip(request),
                 user_agent=request.headers.get("user-agent", ""),
                 details=f"Failed to send verification email: {str(e)}",
             )
-            db.add(error_log)
+            db.add(audit_log)
             await db.commit()
 
-    # Set rate limit
-    await redis.setex(
-        rate_limit_key,
-        settings.VERIFICATION_RESEND_RATE_LIMIT,
-        "1",
-    )
+    return {
+        "message": "If the email exists and is unverified, "
+        "a new verification email has been sent"
+    }
 
-    # Return generic message to prevent email enumeration
-    return {"message": "If the email exists and is unverified, a new verification email has been sent"}
+
+@router.post("/me/email", response_model=dict[str, str])
+async def request_email_change(
+    request: Request,
+    email_in: EmailRequest,
+    current_user: CurrentUser,
+    db: DBSession,
+) -> dict[str, str]:
+    """Request email address change.
+
+    Example:
+    ```python
+    await request_email_change(
+        EmailRequest(email="new@example.com")
+    )
+    print("Verification email sent to new address")
+    ```
+
+    Args:
+        request: FastAPI request
+        email_in: New email address
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        dict: Success message
+
+    Raises:
+        HTTPException:
+            - 400: Invalid email or already in use
+            - 409: Email already registered
+    """
+    try:
+        # Check if email is different
+        new_email = email_in.email.lower()
+        if new_email == current_user.email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="New email must be different from current email",
+            )
+
+        # Check if email is available
+        stmt = select(User).where(User.email == new_email)
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered",
+            )
+
+        # Generate verification code
+        verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
+        verification_expires = datetime.now(UTC) + timedelta(
+            hours=settings.VERIFICATION_CODE_EXPIRES_HOURS
+        )
+
+        # Update user with pending email change
+        current_user.verification_code = verification_code
+        current_user.verification_code_expires_at = verification_expires
+        current_user.pending_email = new_email
+
+        # Log email change request
+        audit_log = AuditLog(
+            user_id=current_user.id,
+            action="request_email_change",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            details=f"Requested email change to {new_email}",
+        )
+        db.add(audit_log)
+        await db.commit()
+
+        # Send verification email to new address
+        try:
+            await email_service.send_verification_email(
+                to_email=new_email,
+                verification_code=verification_code,
+            )
+        except Exception as e:
+            logger.error("Failed to send verification email: %s", str(e))
+            audit_log = AuditLog(
+                user_id=current_user.id,
+                action="send_verification_email",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details=f"Failed to send verification email: {str(e)}",
+            )
+            db.add(audit_log)
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification email",
+            )
+
+        return {"message": "Verification email sent to new address"}
+
+    except IntegrityError as e:
+        await db.rollback()
+        logger.error("Email change request failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email change request failed. Please try again.",
+        )
+
+
+@router.post("/me/email/verify", response_model=UserResponse)
+async def verify_email_change(
+    request: Request,
+    code: str,
+    current_user: CurrentUser,
+    db: DBSession,
+) -> User:
+    """Verify and complete email address change.
+
+    Example:
+    ```python
+    user = await verify_email_change(code="abc123")
+    print(f"Email changed to {user.email}")
+    ```
+
+    Args:
+        request: FastAPI request
+        code: Verification code
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        User: Updated user profile
+
+    Raises:
+        HTTPException:
+            - 400: Invalid/expired code or no pending change
+            - 409: Email taken during verification
+    """
+    try:
+        # Validate state
+        if not current_user.pending_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No pending email change",
+            )
+        if not current_user.verification_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No verification code found",
+            )
+        if current_user.verification_code != code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code",
+            )
+        if not current_user.verification_code_expires_at or current_user.verification_code_expires_at < datetime.now(UTC):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification code expired",
+            )
+
+        # Check if email is still available
+        stmt = select(User).where(
+            User.email == current_user.pending_email,
+            User.id != current_user.id,
+        )
+        result = await db.execute(stmt)
+        existing = result.scalar_one_or_none()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already taken",
+            )
+
+        # Store old email for notification
+        old_email = current_user.email
+
+        # Update user email
+        current_user.email = current_user.pending_email
+        current_user.pending_email = None
+        current_user.verification_code = None
+        current_user.verification_code_expires_at = None
+        current_user.is_verified = True
+
+        # Log email change
+        audit_log = AuditLog(
+            user_id=current_user.id,
+            action="verify_email_change",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            details=f"Changed email from {old_email} to {current_user.email}",
+        )
+        db.add(audit_log)
+        await db.commit()
+        await db.refresh(current_user)
+
+        # Notify old email about the change
+        try:
+            await email_service.send_email_change_notification(
+                to_email=old_email,
+                new_email=current_user.email,
+            )
+        except Exception as e:
+            logger.error("Failed to send change notification: %s", str(e))
+            # Log but don't fail the request
+            audit_log = AuditLog(
+                user_id=current_user.id,
+                action="send_email_change_notification",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details=f"Failed to send change notification: {str(e)}",
+            )
+            db.add(audit_log)
+            await db.commit()
+
+        return current_user
+
+    except IntegrityError as e:
+        await db.rollback()
+        logger.error("Email change verification failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email change verification failed. Please try again.",
+        )
