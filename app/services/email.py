@@ -68,7 +68,7 @@ class EmailService:
         self.host: str = settings.SMTP_HOST
         self.port: int = settings.SMTP_PORT
         self.username: str = settings.SMTP_USER
-        self.password: SecretStr = SecretStr(settings.SMTP_PASSWORD)
+        self.password: SecretStr = settings.SMTP_PASSWORD
         self.from_email: EmailStr = settings.SMTP_FROM_EMAIL
         self.from_name: str = settings.SMTP_FROM_NAME
 
