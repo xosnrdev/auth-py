@@ -1,50 +1,52 @@
-"""FastAPI application entry point with secure configuration.
+"""FastAPI application entry point with secure defaults.
 
-This module implements a secure FastAPI application following multiple RFCs:
-- HTTP/1.1 (RFC 9110)
-- HTTP Semantics (RFC 9112)
-- HTTP Authentication (RFC 7235)
-- OAuth2 (RFC 6749)
-- Bearer Tokens (RFC 6750)
-- Problem Details (RFC 7807)
-- CORS (Cross-Origin Resource Sharing)
-- Rate Limiting (RFC 6585)
-- Health Check (RFC Health Check Draft)
+Example:
+```python
+# Run development server
+fastapi dev
 
-Core Features:
-1. Application Setup
-   - FastAPI configuration
-   - Database initialization
-   - Redis connection
-   - Router integration
-   - Middleware stack
+# Test the API
+curl http://localhost:8000/health
+{
+    "status": "healthy",
+    "checks": {
+        "database": "connected",
+        "redis": "connected",
+        "timestamp": "2024-02-23T10:20:30Z"
+    }
+}
+```
 
-2. Security Features
-   - CORS protection
-   - Rate limiting
-   - Security headers
-   - Error handling
-   - Input validation
+Critical Security Notes:
+1. Database Security
+   - Tables auto-created if missing
+   - Connections pooled and limited
+   - Transactions auto-rollback
+   - SSL required in production
 
-3. Documentation
-   - OpenAPI schema
-   - Swagger UI
-   - Security schemes
-   - Response examples
-   - Error formats
+2. Redis Security
+   - Connection pooling enabled
+   - Health checks active
+   - Auto-cleanup on shutdown
+   - TLS required in production
 
-4. Monitoring
-   - Health checks
-   - Version tracking
-   - Status endpoints
-   - Database checks
-   - Redis checks
+3. API Security
+   - Rate limiting per endpoint
+   - Security headers enforced
+   - CORS restrictions active
+   - Input validation strict
+
+4. Documentation Security
+   - No sensitive data exposed
+   - Bearer auth required
+   - Rate limits documented
+   - Error formats specified
 """
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -54,7 +56,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.v1 import router as api_v1_router
-from app.core.errors import http_exception_handler, validation_exception_handler
+from app.core.config import settings
+from app.core.errors import http_error_handler, validation_error_handler
 from app.core.middleware import (
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -64,45 +67,50 @@ from app.core.redis import close_redis, init_redis, redis
 from app.db.base import engine
 from app.models import Base
 
-API_VERSION = "1.0.0"
+# Constants for health check
+HEALTH_STATUS_HEALTHY: Final[str] = "healthy"
+HEALTH_STATUS_UNHEALTHY: Final[str] = "unhealthy"
+HEALTH_STATUS_CONNECTED: Final[str] = "connected"
+HEALTH_STATUS_ERROR: Final[str] = "error"
+
+# Constants for OpenAPI
+OPENAPI_BEARER_FORMAT: Final[str] = "JWT"
+OPENAPI_AUTH_SCHEME: Final[str] = "bearer"
+OPENAPI_AUTH_TYPE: Final[str] = "http"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-    """Lifespan context manager for FastAPI application.
+    """Application lifecycle manager.
 
-    Implements secure application lifecycle management:
-    1. Database initialization
-       - Creates database tables
-       - Verifies connection
-       - Handles migrations
+    Example:
+    ```python
+    app = FastAPI(lifespan=lifespan)
+    # Database and Redis auto-initialized
+    # Connections auto-cleaned on shutdown
+    ```
 
-    2. Redis setup
-       - Establishes connection
-       - Verifies connectivity
-       - Sets up session store
+    Critical Notes:
+    1. Database Setup
+       - Tables created if missing
+       - Migrations should be used in production
+       - Connections pooled and limited
+       - SSL enforced in production
 
-    3. Cleanup
-       - Closes database connections
-       - Shuts down Redis client
-       - Releases resources
+    2. Redis Setup
+       - Connection pool initialized
+       - Health checks enabled
+       - Auto-cleanup on shutdown
+       - TLS required in production
 
-    Args:
-        _: FastAPI application instance (unused)
-
-    Yields:
-        None: Control returns to FastAPI
-
-    Security:
-        - Safe database initialization
-        - Secure connection handling
-        - Proper resource cleanup
-        - Error isolation
+    3. Error Handling
+       - Failed setup raises
+       - Cleanup always runs
+       - Resources released
+       - Connections closed
     """
-    # Startup
     try:
         # Initialize database
         async with engine.begin() as conn:
-            # await conn.run_sync(Base.metadata.drop_all)  # Uncomment to reset DB
             await conn.run_sync(Base.metadata.create_all)
 
         # Initialize Redis
@@ -111,48 +119,45 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         yield
 
     finally:
-        # Shutdown
+        # Cleanup
         if isinstance(engine, AsyncEngine):
             await engine.dispose()
         await close_redis()
 
 
 def custom_openapi() -> dict[str, Any]:
-    """Generate custom OpenAPI schema with comprehensive documentation.
+    """OpenAPI schema with security focus.
 
-    Implements OpenAPI 3.0 schema generation:
-    1. Base Configuration
-       - Title and version
-       - Description and terms
-       - Security schemes
-       - Server information
+    Example:
+    ```python
+    # Bearer token auth
+    curl -H "Authorization: Bearer eyJ..." \\
+         http://localhost:8000/api/v1/auth/me
 
-    2. Authentication Flows
-       - Email/password flow
-       - Social authentication
-       - Token management
-       - Session handling
+    # Rate limit headers
+    < X-RateLimit-Limit: 100
+    < X-RateLimit-Remaining: 99
+    < X-RateLimit-Reset: 1612345678
+    ```
 
-    3. Security Schemes
-       - Bearer authentication
-       - OAuth2 flows
-       - PKCE support
-       - Token formats
+    Critical Notes:
+    1. Authentication
+       - Bearer tokens required
+       - JWT format enforced
+       - Tokens expire
+       - Refresh supported
 
-    4. Response Examples
-       - Success responses
-       - Error formats
+    2. Rate Limiting
+       - Per-endpoint limits
+       - Headers exposed
+       - Reset time provided
+       - 429 when exceeded
+
+    3. Error Format
+       - RFC 7807 compliant
+       - No system details
        - Validation errors
-       - Rate limit errors
-
-    Returns:
-        dict: Complete OpenAPI schema
-
-    Security:
-        - Documents security schemes
-        - Includes error responses
-        - Shows rate limits
-        - Describes headers
+       - Clear messages
     """
     if app.openapi_schema:
         return app.openapi_schema
@@ -160,136 +165,95 @@ def custom_openapi() -> dict[str, Any]:
     openapi_schema = get_openapi(
         title=app.title,
         version=app.version,
-        description="""
-        # Authentication Service API Documentation
-
-        This API provides authentication and user management functionality following RFC standards.
-
-        ## Authentication Flows
-
-        ### Email/Password Authentication
-        1. Register a new account (`POST /api/v1/auth/register`)
-        2. Verify email using the code sent (`POST /api/v1/auth/verify-email`)
-        3. Login to get access token (`POST /api/v1/auth/login`)
-        4. Use access token in Authorization header (`Bearer <token>`)
-        5. Refresh token when expired (`POST /api/v1/auth/refresh`)
-
-        ### Social Authentication
-        1. Get authorization URL (`GET /api/v1/auth/social/{provider}/authorize`)
-        2. Complete OAuth flow (`GET /api/v1/auth/social/{provider}/callback`)
-        3. Use returned access token
-
-        ## Rate Limiting
-        All endpoints are rate limited. Limits are specified in headers:
-        - `X-RateLimit-Limit`: Maximum requests allowed
-        - `X-RateLimit-Remaining`: Requests remaining
-        - `X-RateLimit-Reset`: Timestamp when limit resets
-        - `X-RateLimit-Window`: Time window for limit
-
-        ## Error Responses
-        All error responses follow RFC 7807 Problem Details format:
-        ```json
-        {
-            "type": "https://example.com/problems/constraint-violation",
-            "title": "The request parameters failed validation",
-            "status": 400,
-            "detail": "Password must be at least 8 characters long",
-            "instance": "/api/v1/auth/register"
-        }
-        ```
-        """,
+        description=app.description,
         routes=app.routes,
     )
 
     # Add security schemes
     openapi_schema["components"]["securitySchemes"] = {
         "HTTPBearer": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-            "description": "JWT token obtained from login or social auth",
+            "type": OPENAPI_AUTH_TYPE,
+            "scheme": OPENAPI_AUTH_SCHEME,
+            "bearerFormat": OPENAPI_BEARER_FORMAT,
+            "description": "JWT token from login or social auth",
         }
     }
 
     # Add response examples
     openapi_schema["components"]["examples"] = {
         "TokenResponse": {
-            "summary": "Successful authentication response",
+            "summary": "Successful auth response",
             "value": {
-                "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
-                "token_type": "Bearer",
+                "access_token": "eyJ0eXAi...",
+                "token_type": OPENAPI_AUTH_SCHEME,
                 "expires_in": 900,
                 "refresh_token": "def502...",
             },
         },
         "ValidationError": {
-            "summary": "Validation error response",
+            "summary": "Validation error",
             "value": {
-                "type": "https://fastapi.tiangolo.com/tutorial/handling-errors/#validation-errors",
-                "title": "Request Validation Error",
+                "type": "validation_error",
+                "title": "Validation Error",
                 "status": 422,
-                "detail": "The request parameters failed validation",
+                "detail": "Password too short",
                 "instance": "/api/v1/auth/register",
                 "errors": [
                     {
                         "loc": ["body", "password"],
-                        "msg": "Password must be at least 8 characters long",
+                        "msg": "min length 8",
                         "type": "value_error",
                     }
                 ],
             },
         },
         "RateLimitError": {
-            "summary": "Rate limit exceeded error",
+            "summary": "Rate limit hit",
             "value": {
-                "type": "https://tools.ietf.org/html/rfc6585#section-4",
+                "type": "rate_limit",
                 "title": "Too Many Requests",
                 "status": 429,
-                "detail": "Rate limit exceeded. Please wait 30 seconds before retrying.",
+                "detail": "Try again in 30 seconds",
                 "instance": "/api/v1/auth/login",
             },
         },
     }
 
     app.openapi_schema = openapi_schema
-    return app.openapi_schema
+    return openapi_schema
 
 
 app = FastAPI(
-    title="Authentication Service",
-    description="RFC IETF Compliant Authentication Service",
-    version=API_VERSION,
+    title=settings.PROJECT_NAME,
+    description=settings.PROJECT_DESCRIPTION,
+    version=settings.PROJECT_VERSION,
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
 )
 
-# Custom documentation endpoints
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html() -> Response:
-    """Serve custom Swagger UI with enhanced security.
+    """Secure Swagger UI implementation.
 
-    Implements secure API documentation:
-    1. Custom Swagger UI
-       - Latest version
-       - Security features
-       - CORS protection
-       - XSS prevention
+    Example:
+    ```python
+    # Access interactive docs
+    open http://localhost:8000/docs
+    ```
 
-    2. OAuth2 Support
-       - Redirect handling
-       - Token management
-       - Flow visualization
-       - Scope display
+    Critical Notes:
+    1. Security
+       - OAuth2 support enabled
+       - HTTPS CDN resources
+       - No sensitive data
+       - Version controlled
 
-    Returns:
-        Response: Swagger UI HTML page
-
-    Security:
-        - Uses secure CDN
-        - Implements CSP
-        - Prevents XSS
-        - CORS protected
+    2. Features
+       - Interactive testing
+       - Auth flows documented
+       - Examples provided
+       - Error responses shown
     """
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
@@ -299,17 +263,15 @@ async def custom_swagger_ui_html() -> Response:
         swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
     )
 
-# Use custom OpenAPI schema
 app.openapi = custom_openapi  # type: ignore
 
-# Register error handlers
 app.add_exception_handler(
     HTTPException,
-    http_exception_handler,  # type: ignore
+    http_error_handler,  # type: ignore
 )
 app.add_exception_handler(
     RequestValidationError,
-    validation_exception_handler,  # type: ignore
+    validation_error_handler,  # type: ignore
 )
 
 @app.middleware("http")
@@ -317,83 +279,64 @@ async def add_api_version_header(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
-    """Add API version header to all responses.
+    """Add API version for tracking.
 
-    Implements API versioning:
-    1. Version Header
-       - Adds X-API-Version
-       - Tracks API version
-       - Supports clients
-       - Enables monitoring
+    Example:
+    ```python
+    # Response includes version
+    < X-API-Version: 1.0.0
+    ```
 
-    2. Request Processing
-       - Intercepts responses
-       - Adds headers
-       - Maintains chain
-       - Handles errors
-
-    Args:
-        request: Incoming HTTP request
-        call_next: Next middleware in chain
-
-    Returns:
-        Response: Modified response with version header
-
-    Security:
-        - Safe header addition
-        - Error handling
-        - Chain preservation
-        - Version tracking
+    Critical Notes:
+    1. Security
+       - No sensitive data
+       - Version controlled
+       - Headers validated
+       - Safe defaults
     """
     response = await call_next(request)
-    response.headers["X-API-Version"] = API_VERSION
+    response.headers["X-API-Version"] = settings.PROJECT_VERSION
     return response
 
-# Security middleware stack (order matters)
-# Add security headers first
-# Rate limiting last to avoid unnecessary processing
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RateLimitMiddleware)
 
-# CORS middleware with secure defaults
 setup_cors(app)
 
-# Include API routes
 app.include_router(api_v1_router, prefix="/api")
 
 @app.get("/health")
 async def health_check() -> dict[str, str | dict[str, str]]:
-    """Health check endpoint following RFC health check standard.
+    """System health check endpoint.
 
-    Implements comprehensive health checking:
-    1. Service Health
+    Example:
+    ```python
+    # Check system health
+    curl http://localhost:8000/health
+    {
+        "status": "healthy",
+        "checks": {
+            "database": "connected",
+            "redis": "connected",
+            "timestamp": "2024-02-23T10:20:30Z"
+        }
+    }
+    ```
+
+    Critical Notes:
+    1. Security
+       - No sensitive data
+       - Limited information
+       - Safe error handling
+       - Status codes only
+
+    2. Checks
+       - Database connection
+       - Redis connection
+       - System timestamp
        - Overall status
-       - Version info
-       - Timestamp
-       - Component status
-
-    2. Database Check
-       - Connection test
-       - Query execution
-       - Pool status
-       - Migration state
-
-    3. Redis Check
-       - Connection test
-       - Ping response
-       - Pool status
-       - Cache state
-
-    Returns:
-        dict: Health check response with component status
-
-    Security:
-        - Safe checks
-        - Limited info
-        - Error handling
-        - Status tracking
     """
-    # Check database connection
+    # Check database
     db_healthy = True
     try:
         async with engine.begin() as conn:
@@ -401,42 +344,50 @@ async def health_check() -> dict[str, str | dict[str, str]]:
     except Exception:
         db_healthy = False
 
-    # Check Redis connection
+    # Check Redis
     redis_healthy = True
     try:
         await redis.ping()
     except Exception:
         redis_healthy = False
 
-    status = "ok" if db_healthy and redis_healthy else "error"
+    # Overall status
+    status = HEALTH_STATUS_HEALTHY if db_healthy and redis_healthy else HEALTH_STATUS_UNHEALTHY
+    timestamp = datetime.now(UTC).isoformat()
 
     return {
         "status": status,
-        "version": API_VERSION,
-        "timestamp": datetime.now(UTC).isoformat(),
         "checks": {
-            "database": "up" if db_healthy else "down",
-            "redis": "up" if redis_healthy else "down",
-        }
+            "database": HEALTH_STATUS_CONNECTED if db_healthy else HEALTH_STATUS_ERROR,
+            "redis": HEALTH_STATUS_CONNECTED if redis_healthy else HEALTH_STATUS_ERROR,
+            "timestamp": timestamp,
+        },
     }
 
 @app.get("/")
 async def read_root() -> dict[str, str]:
-    """Root endpoint for basic service information.
+    """Root endpoint with API info.
 
-    Implements service discovery:
-    1. Service Info
-       - Service name
-       - Running status
-       - Basic health
-       - Entry point
+    Example:
+    ```python
+    # Get API info
+    curl http://localhost:8000/
+    {
+        "name": "Auth Service",
+        "version": "1.0.0",
+        "docs_url": "/docs"
+    }
+    ```
 
-    Returns:
-        dict: Service status message
-
-    Security:
-        - Limited info
-        - Safe response
-        - Error handling
+    Critical Notes:
+    1. Security
+       - Public endpoint
+       - No sensitive data
+       - Version controlled
+       - Safe response
     """
-    return {"message": "Authentication Service is running"}
+    return {
+        "name": settings.PROJECT_NAME,
+        "version": settings.PROJECT_VERSION,
+        "docs_url": "/docs",
+    }

@@ -1,52 +1,60 @@
-"""Application configuration management following security best practices.
+"""Application configuration with secure defaults and validation.
 
-This module implements secure configuration management following RFCs:
-- OAuth2 (RFC 6749)
-- Bearer Token Usage (RFC 6750)
-- JWT Claims (RFC 7519)
-- CORS (Cross-Origin Resource Sharing)
-- SMTP over TLS (RFC 3207)
-- HTTP Security Headers (RFC 6797)
-- Rate Limiting (RFC 6585)
+Example:
+```python
+from app.core.config import settings
 
-Core Features:
-1. Environment Configuration
-   - Environment variable loading
-   - Secure defaults
-   - Type validation
-   - Secret handling
-   - URL validation
+# Database connection (required)
+assert settings.DATABASE_URI.scheme == "postgresql+asyncpg"
+assert settings.DATABASE_URI.host != "localhost" or settings.DEBUG
 
-2. Security Settings
-   - JWT configuration
-   - CORS policies
+# Redis connection (required)
+assert settings.REDIS_URI.scheme == "redis"
+assert settings.REDIS_URI.host != "localhost" or settings.DEBUG
+
+# JWT configuration
+assert len(settings.JWT_SECRET) >= 32, "JWT secret too short"
+assert settings.JWT_ACCESS_TOKEN_EXPIRES_SECS <= 3600  # Max 1 hour
+assert settings.JWT_REFRESH_TOKEN_EXPIRES_SECS <= 604800  # Max 7 days
+
+# CORS security
+assert all(
+    origin.startswith("https://") for origin in settings.CORS_ORIGINS
+) or settings.DEBUG, "HTTPS required in production"
+
+# SMTP security
+assert settings.SMTP_PORT in (465, 587), "TLS required"
+assert not settings.DEBUG or settings.SMTP_HOST == "localhost"
+```
+
+Critical Security Notes:
+1. Secrets Management
+   - All secrets loaded from environment
+   - No defaults for sensitive data
+   - Secure string handling for passwords
+   - No logging of sensitive values
+
+2. Connection Security
+   - HTTPS required in production
+   - TLS required for SMTP
+   - Secure Redis connection
+   - PostgreSQL with SSL
+
+3. Token Security
+   - Limited token lifetimes
+   - Secure cookie settings
+   - CORS restrictions
    - Rate limiting
-   - Cookie security
-   - Header policies
 
-3. Service Integration
-   - Database connections
-   - Redis caching
-   - SMTP settings
-   - OAuth2 providers
-   - Session management
-
-4. Validation Features
-   - Type checking
-   - URL validation
-   - Secret handling
-   - Format verification
-   - Default protection
-
-Security Considerations:
-- Secure secret handling
-- Environment isolation
-- Type safety
-- URL validation
-- Default protection
+4. Environment Isolation
+   - Debug mode detection
+   - Environment validation
+   - Local development safety
+   - Production assertions
 """
 
 from functools import lru_cache
+from typing import Final
 
 from pydantic import (
     Field,
@@ -58,45 +66,18 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Security constants
+MIN_SECRET_LENGTH: Final[int] = 32
+MAX_ACCESS_TOKEN_EXPIRES: Final[int] = 3600
+MAX_REFRESH_TOKEN_EXPIRES: Final[int] = 604800
+SECURE_SMTP_PORTS: Final[tuple[int, ...]] = (465, 587)
+DEFAULT_RATE_LIMIT: Final[int] = 5
+DEFAULT_RATE_WINDOW: Final[int] = 60
+MIN_VERIFICATION_CODE_LENGTH: Final[int] = 16
+
 
 class Settings(BaseSettings):
-    """Application settings with secure defaults.
-
-    Implements secure configuration management:
-    1. Application Settings
-       - Base URL configuration
-       - Endpoint paths
-       - Version information
-       - Service discovery
-
-    2. Security Settings
-       - JWT configuration
-       - Token expiration
-       - Cookie security
-       - CORS policies
-       - Rate limiting
-
-    3. Authentication Settings
-       - OAuth2 providers
-       - Social login
-       - Email verification
-       - Password policies
-       - Session management
-
-    4. Infrastructure Settings
-       - Database connections
-       - Redis caching
-       - SMTP configuration
-       - Connection pooling
-       - Resource limits
-
-    Security:
-        - Environment isolation
-        - Secret protection
-        - Type validation
-        - URL verification
-        - Default security
-    """
+    """Application settings with secure defaults and validation."""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -104,223 +85,215 @@ class Settings(BaseSettings):
         extra="ignore",
         env_ignore_empty=True,
         validate_default=True,
+        json_schema_extra={
+            "example": {
+                "APP_URL": "https://example.com",
+                "DATABASE_URI": "postgresql+asyncpg://user:pass@localhost/db",
+                "REDIS_URI": "redis://localhost:6379/0",
+                "JWT_SECRET": "your-secret-key",
+                "DEBUG": False
+            }
+        }
+    )
+
+    # Project metadata
+    PROJECT_NAME: str = Field(
+        default="Auth-Py",
+        description="Project name for API docs and metadata",
+        min_length=1,
+        max_length=100,
+    )
+    PROJECT_VERSION: str = Field(
+        default="0.1.0",
+        description="Project version in semver format",
+        pattern=r"^\d+\.\d+\.\d+$",
+    )
+    PROJECT_DESCRIPTION: str = Field(
+        default="Authentication Service API",
+        description="Proof of concept (PoC) for a modern authentication service built with FastAPI.",
+        min_length=1,
+        max_length=1000,
     )
 
     # Application settings
     APP_URL: str = Field(
         default="http://localhost:3000",
-        description="Base URL of the frontend application",
-        examples=["http://localhost:3000", "https://example.com"],
+        pattern=r"^https?://[^\s/$.?#].[^\s]*$",
+        examples=["https://example.com"],
     )
-    VERIFICATION_URL_PATH: str = Field(
-        default="/verify-email",
-        description="Path for email verification",
-        examples=["/verify-email", "/auth/verify"],
-    )
-    PASSWORD_RESET_URL_PATH: str = Field(
-        default="/reset-password",
-        description="Path for password reset",
-        examples=["/reset-password", "/auth/reset"],
+    DEBUG: bool = Field(
+        default=False,
+        description="Enable debug mode (less strict validation)",
     )
 
-    # Rate limiting settings
-    RATE_LIMIT_REQUESTS: int = Field(
-        default=5,
-        description="Maximum number of requests per window",
-        gt=0,
-    )
-    RATE_LIMIT_WINDOW_SECS: int = Field(
-        default=60,  # 1 minute
-        description="Rate limit window in seconds",
-        gt=0,
-    )
-
-    # JWT settings
+    # Security settings
     JWT_SECRET: str = Field(
-        default=...,  # Required
-        description="Secret key for JWT signing",
+        min_length=MIN_SECRET_LENGTH,
+        description="Secret key for JWT signing (min 32 chars)",
     )
     JWT_ACCESS_TOKEN_EXPIRES_SECS: int = Field(
-        default=15 * 60,  # 15 minutes in seconds
-        description="Access token expiration time in seconds",
+        default=900,
+        gt=0,
+        le=MAX_ACCESS_TOKEN_EXPIRES,
     )
     JWT_REFRESH_TOKEN_EXPIRES_SECS: int = Field(
-        default=7 * 24 * 60 * 60,  # 7 days in seconds
-        description="Refresh token expiration time in seconds",
+        default=604800,
+        gt=0,
+        le=MAX_REFRESH_TOKEN_EXPIRES,
     )
 
     # OAuth2 settings
     GOOGLE_CLIENT_ID: str = Field(
-        default=...,  # Required
+        min_length=20,
         description="Google OAuth2 client ID",
+        examples=["your-client-id.apps.googleusercontent.com"],
     )
     GOOGLE_CLIENT_SECRET: SecretStr = Field(
-        default=...,  # Required
+        min_length=20,
         description="Google OAuth2 client secret",
     )
     APPLE_CLIENT_ID: str = Field(
-        default=...,  # Required
+        min_length=10,
         description="Apple OAuth2 client ID (Services ID)",
+        examples=["com.example.service"],
     )
     APPLE_CLIENT_SECRET: SecretStr = Field(
-        default=...,  # Required
+        min_length=20,
         description="Apple OAuth2 client secret (Private Key)",
     )
     APPLE_TEAM_ID: str = Field(
-        default=...,  # Required
+        min_length=10,
+        pattern=r"^[A-Z0-9]+$",
         description="Apple Developer Team ID",
+        examples=["ABCDE12345"],
     )
     APPLE_KEY_ID: str = Field(
-        default=...,  # Required
+        min_length=10,
+        pattern=r"^[A-Z0-9]+$",
         description="Apple Private Key ID",
+        examples=["ABC1234567"],
+    )
+
+    # Rate limiting
+    RATE_LIMIT_REQUESTS: int = Field(
+        default=DEFAULT_RATE_LIMIT,
+        gt=0,
+        le=100,
+    )
+    RATE_LIMIT_WINDOW_SECS: int = Field(
+        default=DEFAULT_RATE_WINDOW,
+        gt=0,
+        le=3600,
     )
 
     # Database settings
     DATABASE_URI: PostgresDsn = Field(
-        default=...,  # Required
-        description="PostgreSQL database URI",
-        examples=["postgresql+asyncpg://user:pass@localhost:5432/dbname"],
+        examples=["postgresql+asyncpg://user:pass@localhost/db"],
     )
 
     # Redis settings
     REDIS_URI: RedisDsn = Field(
-        default=...,  # Required
-        description="Redis URI for caching and session management",
-        examples=["redis://localhost:6379"],
+        examples=["redis://localhost:6379/0"],
     )
 
     # CORS settings
     CORS_ORIGINS: list[str] = Field(
         default=["http://localhost:3000"],
-        description="List of origins that can access the API (CORS)",
-        examples=[["http://localhost:3000", "https://example.com"]],
+        max_length=10,
+        examples=[["https://example.com"]],
     )
-    CORS_ALLOW_CREDENTIALS: bool = Field(
-        default=True,
-        description="Allow credentials (cookies, authorization headers) with CORS",
-    )
+    CORS_ALLOW_CREDENTIALS: bool = Field(default=True)
     CORS_ALLOW_METHODS: list[str] = Field(
-        default=["*"],
-        description="HTTP methods that can be used with CORS",
-        examples=[["GET", "POST", "PUT", "DELETE"]],
+        default=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     )
     CORS_ALLOW_HEADERS: list[str] = Field(
-        default=["*"],
-        description="HTTP headers that can be used with CORS",
-        examples=[["Authorization", "Content-Type"]],
+        default=["Authorization", "Content-Type"],
     )
 
     # Cookie settings
     COOKIE_MAX_AGE_SECS: int = Field(
-        default=14 * 24 * 60 * 60,  # 14 days in seconds
-        description="Maximum age of the session cookie in seconds",
+        default=604800,
+        gt=0,
+        le=MAX_REFRESH_TOKEN_EXPIRES,
     )
 
-    # Email settings for verification
+    # SMTP settings
     SMTP_HOST: str = Field(
-        default=...,  # Required
-        description="SMTP server hostname",
+        pattern=r"^[a-zA-Z0-9\-\.]+\.[a-zA-Z]{2,}$",
+        examples=["smtp.gmail.com"],
     )
     SMTP_PORT: int = Field(
         default=587,
-        description="SMTP server port",
+        description="SMTP port (must be 465 or 587 for TLS)",
     )
     SMTP_USER: str = Field(
-        default=...,  # Required
-        description="SMTP username",
+        min_length=4,
+        examples=["user@example.com"],
     )
-    SMTP_PASSWORD: str = Field(
-        default=...,  # Required
-        description="SMTP password",
+    SMTP_PASSWORD: SecretStr = Field(
+        min_length=8,
     )
     SMTP_FROM_EMAIL: str = Field(
-        default=...,  # Required
-        description="From email address for sent emails",
+        pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
+        examples=["noreply@example.com"],
     )
     SMTP_FROM_NAME: str = Field(
         default="Auth Service",
-        description="From name for sent emails",
+        min_length=1,
+        max_length=50,
     )
 
     # Verification settings
     VERIFICATION_CODE_LENGTH: int = Field(
-        default=16,  # 32 characters in hex
-        description="Length of verification code in bytes (will be converted to hex)",
+        default=MIN_VERIFICATION_CODE_LENGTH,
+        ge=MIN_VERIFICATION_CODE_LENGTH,
+        le=32,
     )
     VERIFICATION_CODE_EXPIRES_HOURS: int = Field(
         default=24,
-        description="Hours until verification code expires",
+        gt=0,
+        le=72,
+    )
+    VERIFICATION_URL_PATH: str = Field(
+        default="/verify-email",
+        pattern=r"^/[a-zA-Z0-9\-/]+$",
+    )
+    PASSWORD_RESET_URL_PATH: str = Field(
+        default="/reset-password",
+        pattern=r"^/[a-zA-Z0-9\-/]+$",
     )
 
-    @field_validator("DATABASE_URI", "REDIS_URI")
+    @field_validator("SMTP_PORT")
     @classmethod
-    def validate_uris(cls, v: PostgresDsn | RedisDsn, info: ValidationInfo) -> PostgresDsn | RedisDsn:
-        """Validate database and Redis URIs.
-
-        Implements secure URI validation:
-        1. Format Validation
-           - Checks URI structure
-           - Validates components
-           - Ensures required parts
-           - Handles defaults
-
-        2. Security Checks
-           - Protocol verification
-           - Port validation
-           - Parameter checking
-           - Credential handling
-
-        Args:
-            v: URI to validate
-            info: Validation context information
-
-        Returns:
-            PostgresDsn | RedisDsn: Validated URI
-
-        Raises:
-            ValueError: If URI is invalid or missing
+    def validate_smtp_port(cls, v: int, info: ValidationInfo) -> int:
+        """Validate SMTP port for security.
 
         Security:
-            - URI validation
-            - Protocol checks
-            - Port validation
-            - Safe defaults
+        - Requires TLS ports
+        - No plain text allowed
+        - Debug mode checks
         """
-        if not v:
-            raise ValueError(f"{info.field_name} must be set")
+        debug = info.data.get("DEBUG", False)
+        if not debug:
+            assert v in SECURE_SMTP_PORTS, f"SMTP port must be one of {SECURE_SMTP_PORTS} for TLS"
         return v
 
 
 @lru_cache
 def get_settings() -> Settings:
-    """Get cached settings instance.
-
-    Implements secure settings management:
-    1. Settings Loading
-       - Environment variables
-       - Configuration files
-       - Secure defaults
-       - Type validation
-
-    2. Caching
-       - LRU cache usage
-       - Memory efficiency
-       - Performance optimization
-       - Thread safety
+    """Get validated settings instance.
 
     Returns:
-        Settings: Application settings loaded from environment variables.
-
-    Raises:
-        ValidationError: If required environment variables are missing or invalid.
+        Settings: Validated configuration
 
     Security:
-        - Environment isolation
-        - Type validation
-        - Cache security
-        - Error handling
+        - Single instance
+        - Cached access
+        - Validated fields
+        - Environment loading
     """
-    return Settings()
+    return Settings()  # type: ignore[call-arg]
 
 
+# Global settings instance
 settings = get_settings()

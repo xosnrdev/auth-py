@@ -1,5 +1,43 @@
+"""SQLAlchemy User model with role-based access control.
+
+Example:
+```python
+# Create new user
+user = User(
+    email="user@example.com",
+    phone="+1234567890",          # Optional, E.164 format
+    password_hash="bcrypt$...",   # From password hasher
+    roles=["user", "admin"],      # Default: ["user"]
+    is_verified=False,            # Email verification
+    is_active=True               # Account status
+)
+
+# Check permissions
+if user.has_role("admin"):
+    # Admin operations
+    pass
+
+if user.has_any_role(["admin", "moderator"]):
+    # Staff operations
+    pass
+
+if user.has_all_roles(["user", "premium"]):
+    # Premium user operations
+    pass
+```
+
+Critical Notes:
+- All timestamps use UTC
+- Email must be unique
+- Phone must be E.164 format
+- Password uses bcrypt hash
+- Default role is "user"
+- Verification codes expire
+- Reset tokens expire
+"""
+
 from datetime import datetime
-from typing import Any
+from typing import Final
 
 from sqlalchemy import Boolean, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -7,21 +45,28 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
+# Constants
+MAX_EMAIL_LENGTH: Final[int] = 255
+MAX_PHONE_LENGTH: Final[int] = 20
+MAX_VERIFICATION_CODE_LENGTH: Final[int] = 32
+MAX_RESET_TOKEN_LENGTH: Final[int] = 64
+DEFAULT_ROLE: Final[str] = "user"
+
 
 class User(Base):
-    """User model for authentication."""
+    """User model with role-based access control."""
 
     __tablename__ = "users"
 
     # Authentication fields
     email: Mapped[str] = mapped_column(
-        String(255),
+        String(MAX_EMAIL_LENGTH),
         unique=True,
         nullable=False,
         index=True,
     )
     phone: Mapped[str | None] = mapped_column(
-        String(20),
+        String(MAX_PHONE_LENGTH),
         unique=True,
         nullable=True,
         index=True,
@@ -30,7 +75,7 @@ class User(Base):
         Text,
         nullable=False,
     )
-    social_id: Mapped[dict[str, Any]] = mapped_column(
+    social_id: Mapped[dict[str, str]] = mapped_column(
         JSONB,
         nullable=False,
         server_default="{}",
@@ -40,8 +85,7 @@ class User(Base):
     roles: Mapped[list[str]] = mapped_column(
         JSONB,
         nullable=False,
-        server_default='["user"]',  # Default role for all users
-        comment="User roles for RBAC (e.g., user, admin)",
+        server_default=f'["{DEFAULT_ROLE}"]',
     )
 
     # Status fields
@@ -58,7 +102,7 @@ class User(Base):
 
     # Email verification
     verification_code: Mapped[str | None] = mapped_column(
-        String(32),  # Store verification code
+        String(MAX_VERIFICATION_CODE_LENGTH),
         nullable=True,
         index=True,
     )
@@ -69,7 +113,7 @@ class User(Base):
 
     # Password reset
     reset_token: Mapped[str | None] = mapped_column(
-        String(64),  # Store reset token
+        String(MAX_RESET_TOKEN_LENGTH),
         nullable=True,
         index=True,
     )
@@ -79,38 +123,20 @@ class User(Base):
     )
 
     def has_role(self, role: str) -> bool:
-        """Check if user has a specific role.
-
-        Args:
-            role: Role to check
-
-        Returns:
-            bool: True if user has the role
-        """
+        """Check if user has a specific role."""
+        assert role, "Role cannot be empty"
         return role in self.roles
 
     def has_any_role(self, roles: list[str]) -> bool:
-        """Check if user has any of the specified roles.
-
-        Args:
-            roles: List of roles to check
-
-        Returns:
-            bool: True if user has any of the roles
-        """
+        """Check if user has any of the roles."""
+        assert roles, "Roles list cannot be empty"
         return bool(set(self.roles) & set(roles))
 
     def has_all_roles(self, roles: list[str]) -> bool:
-        """Check if user has all specified roles.
-
-        Args:
-            roles: List of roles to check
-
-        Returns:
-            bool: True if user has all roles
-        """
+        """Check if user has all roles."""
+        assert roles, "Roles list cannot be empty"
         return set(roles).issubset(set(self.roles))
 
     def __repr__(self) -> str:
-        """String representation of User model."""
+        """Get string representation."""
         return f"<User {self.email}>"

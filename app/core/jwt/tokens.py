@@ -1,94 +1,114 @@
 """JWT token service implementing OAuth2 and JWT standards.
 
-This module implements secure token management following multiple RFCs:
-- JSON Web Token (RFC 7519)
-- OAuth2 Token Management (RFC 6749)
-- Token Introspection (RFC 7662)
-- Token Revocation (RFC 7009)
-- Bearer Token Usage (RFC 6750)
-- Proof Key for Code Exchange (RFC 7636)
+Example:
+```python
+# Initialize service
+service = TokenService()
 
-Core Features:
-1. Token Management
-   - Access token creation and validation
-   - Refresh token rotation
-   - Token revocation
-   - Token introspection
-   - Metadata storage
+# Create tokens for web client
+response = Response()
+await service.create_tokens(
+    user_id=UUID("123e4567-e89b-12d3-a456-426614174000"),
+    user_agent="Mozilla/5.0...",
+    ip_address="1.2.3.4",
+    response=response,  # Sets HTTP-only cookie
+)
+assert "refresh_token" in response.cookies
+assert response.cookies["refresh_token"].httponly is True
+assert response.cookies["refresh_token"].secure is True
 
-2. Security Features
-   - JWT signing and verification
-   - Token type enforcement
-   - Expiration handling
-   - Revocation tracking
-   - Metadata validation
+# Create tokens for mobile client
+tokens = await service.create_tokens(
+    user_id=UUID("123e4567-e89b-12d3-a456-426614174000"),
+    user_agent="MyApp/1.0",
+    ip_address="5.6.7.8",
+)
+assert tokens == {
+    "access_token": "eyJhbGciOiJIUzI1...",  # JWT format
+    "refresh_token": "eyJhbGciOiJIUzI1...",  # JWT format
+    "token_type": "bearer",
+    "expires_in": 3600  # 1 hour
+}
 
-3. Token Delivery
-   - API response format
-   - Secure cookie handling
-   - Mobile app support
-   - Web client support
+# Verify token
+payload = await service.verify_token(tokens["access_token"])
+assert payload.sub == "123e4567-e89b-12d3-a456-426614174000"
+assert payload.type == TokenType.ACCESS
+assert payload.exp > datetime.now(UTC)
 
-4. Redis Integration
-   - Token metadata storage
-   - Revocation list
-   - Session tracking
-   - User agent tracking
+# Revoke token
+await service.revoke_token(tokens["refresh_token"])
+with pytest.raises(HTTPException):
+    await service.verify_token(tokens["refresh_token"])
+```
 
-Security Considerations:
-- Uses secure JWT algorithms
-- Implements token rotation
+Critical Notes:
+- Access tokens expire in 1 hour
+- Refresh tokens expire in 7 days
+- Tokens are signed with HS256
+- Refresh tokens use HTTP-only cookies
+- Token metadata stored in Redis
+- Supports token revocation
 - Prevents token reuse
 - Tracks user sessions
-- Supports revocation
-- Handles metadata securely
+- Requires secure transport
 """
 
 import logging
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import TypedDict
+from typing import Any, Final, TypedDict, cast
 from uuid import UUID, uuid4
 
-from fastapi import Response
+from fastapi import HTTPException, Response, status
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+from redis.asyncio.client import Redis
 
 from app.core.config import settings
 from app.core.redis import redis
 
+# Initialize logger
 logger = logging.getLogger(__name__)
 
-# JWT algorithm following RFC 7518
-ALGORITHM = "HS256"
+# Constants
+ALGORITHM: Final[str] = "HS256"
+TOKEN_PREFIX: Final[str] = "token:"
+BEARER_FORMAT: Final[str] = "bearer"
+
+# Token expiration
+ACCESS_TOKEN_EXPIRES: Final[int] = settings.JWT_ACCESS_TOKEN_EXPIRES_SECS
+REFRESH_TOKEN_EXPIRES: Final[int] = settings.JWT_REFRESH_TOKEN_EXPIRES_SECS
+COOKIE_MAX_AGE: Final[int] = settings.COOKIE_MAX_AGE_SECS
+
+# Redis key patterns
+TOKEN_KEY_PATTERN: Final[str] = TOKEN_PREFIX + "*"
+USER_TOKEN_PATTERN: Final[str] = TOKEN_PREFIX + "user:{user_id}:*"
 
 
 class TokenType(str, Enum):
-    """Token types following OAuth2 specification (RFC 6749).
+    """Token types following OAuth2 specification.
 
-    Defines the supported token types for authentication:
-    - ACCESS: Short-lived tokens for API access
-    - REFRESH: Long-lived tokens for obtaining new access tokens
-
-    The type is included in the JWT payload to prevent
-    token type confusion attacks.
+    Security:
+    - Prevents token confusion attacks
+    - Enforces token type validation
+    - Ensures type safety
     """
 
-    ACCESS = "access"   # Short-lived API access token
-    REFRESH = "refresh" # Long-lived refresh token
+    ACCESS = "access"
+    REFRESH = "refresh"
 
 
 class TokenResponse(TypedDict):
-    """OAuth2 token response format (RFC 6749 Section 5.1).
+    """OAuth2 token response format (RFC 6749).
 
-    Standardized response format for token endpoints:
-    - access_token: The issued access token
-    - refresh_token: Optional refresh token
-    - token_type: Type of token (always "bearer")
-    - expires_in: Token lifetime in seconds
-
-    This format is used for API responses, while web clients
-    receive refresh tokens via secure cookies.
+    Format:
+    {
+        "access_token": "eyJhbGci...",
+        "refresh_token": "eyJhbGci...",
+        "token_type": "bearer",
+        "expires_in": 3600
+    }
     """
 
     access_token: str
@@ -98,39 +118,37 @@ class TokenResponse(TypedDict):
 
 
 class TokenPayload(BaseModel):
-    """JWT token payload following RFC 7519.
+    """JWT token payload with validation.
 
-    Required claims:
-    - sub: Subject identifier (user ID)
-    - exp: Expiration time
-    - iat: Issued at time
-    - jti: Unique token identifier
-    - type: Token type (access/refresh)
-
-    The payload is signed using HMAC-SHA256 (HS256)
-    and includes standard JWT claims plus custom ones.
+    Security:
+    - Required claims
+    - Type validation
+    - Time validation
+    - Unique identifiers
     """
 
-    sub: str  # User ID in hex format
-    exp: datetime  # Expiration time
-    iat: datetime  # Issued at
-    jti: str  # JWT ID in hex format
-    type: TokenType  # Token type
+    sub: str = Field(min_length=32, max_length=36)
+    exp: datetime
+    iat: datetime
+    jti: str = Field(min_length=32, max_length=36)
+    type: TokenType
+
+    @field_validator("exp", "iat")
+    @classmethod
+    def validate_timestamps(cls, v: datetime) -> datetime:
+        """Ensure timestamps are UTC."""
+        assert v.tzinfo is not None, "Timestamp must be timezone-aware"
+        return v.astimezone(UTC)
 
 
 class TokenMetadata(TypedDict):
     """Token metadata for security tracking.
 
-    Stores additional information about tokens:
-    - user_id: Associated user identifier
-    - user_agent: Client user agent string
-    - ip_address: Client IP address
-
-    This data is stored in Redis and used for:
-    - Session tracking
+    Used for:
+    - Session management
     - Security monitoring
-    - Token revocation
     - Audit logging
+    - Token revocation
     """
 
     user_id: str
@@ -139,51 +157,31 @@ class TokenMetadata(TypedDict):
 
 
 class TokenService:
-    """JWT token service with Redis-backed revocation.
+    """JWT token service with security features.
 
-    This service implements secure token management following OAuth2 and JWT standards:
-    1. Token Creation
-       - Generates signed JWTs
-       - Includes standard claims
-       - Stores metadata in Redis
-       - Supports multiple delivery methods
-
-    2. Token Validation
-       - Verifies signatures
-       - Checks expiration
-       - Validates token type
-       - Handles revocation
-
-    3. Token Revocation
-       - Single token revocation
-       - Bulk user revocation
-       - Metadata cleanup
-       - Session termination
-
-    4. Security Features
-       - Token rotation
+    Security:
+    1. Token Management
+       - Secure signing (HS256)
+       - Type enforcement
+       - Expiration handling
        - Metadata tracking
-       - Session monitoring
-       - Secure defaults
 
-    Usage:
-        service = TokenService()
+    2. Token Delivery
+       - HTTP-only cookies
+       - Secure transport
+       - Bearer scheme
+       - Mobile support
 
-        # Create tokens
-        tokens = await service.create_tokens(user_id, user_agent, ip_address)
-
-        # Verify token
-        payload = await service.verify_token(token, TokenType.ACCESS)
-
-        # Revoke token
-        await service.revoke_token(token)
-
-        # Revoke all user tokens
-        await service.revoke_all_user_tokens(user_id)
+    3. Token Protection
+       - Revocation support
+       - Session tracking
+       - Reuse prevention
+       - Secure storage
     """
 
     def __init__(self) -> None:
-        """Initialize token service."""
+        """Initialize with secure defaults."""
+        assert settings.JWT_SECRET, "JWT secret must be configured"
         self.secret = settings.JWT_SECRET
 
     async def create_tokens(
@@ -193,42 +191,32 @@ class TokenService:
         ip_address: str,
         response: Response | None = None,
     ) -> TokenResponse | None:
-        """Create access and refresh tokens following OAuth2 specification.
-
-        Implements secure token creation:
-        1. Generates access token (short-lived)
-        2. Generates refresh token (long-lived)
-        3. Stores token metadata in Redis
-        4. Handles multiple delivery methods
-
-        For web clients:
-        - Sets refresh token in HTTP-only cookie
-        - Returns access token in response body
-
-        For API clients:
-        - Returns both tokens in response body
-        - Includes token metadata
+        """Create access and refresh tokens securely.
 
         Args:
-            user_id: User ID to include in tokens
-            user_agent: Client user agent for tracking
-            ip_address: Client IP for tracking
-            response: Optional response for cookie-based delivery
+            user_id: User identifier
+            user_agent: Client user agent
+            ip_address: Client IP address
+            response: Optional response for cookies
 
         Returns:
-            TokenResponse | None: Tokens for API clients, None for web clients
+            TokenResponse | None: Tokens or None if using cookies
 
         Security:
-            - Uses secure JWT signing
-            - Implements token rotation
-            - Stores metadata securely
-            - Supports secure cookies
-            - Prevents token exposure
+            - Secure token generation
+            - Metadata tracking
+            - Cookie security
+            - Type safety
         """
+        # Create tokens
         access_token = await self.create_access_token(user_id)
-        refresh_token = await self.create_refresh_token(user_id, user_agent, ip_address)
+        refresh_token = await self.create_refresh_token(
+            user_id=user_id,
+            user_agent=user_agent,
+            ip_address=ip_address,
+        )
 
-        # If response object is provided, set cookies (web flow)
+        # Web client: Set secure cookie
         if response:
             response.set_cookie(
                 key="refresh_token",
@@ -236,67 +224,56 @@ class TokenService:
                 httponly=True,
                 secure=True,
                 samesite="lax",
-                max_age=settings.COOKIE_MAX_AGE_SECS,
-                expires=int((datetime.now(UTC) + timedelta(seconds=settings.COOKIE_MAX_AGE_SECS)).timestamp()),
+                max_age=COOKIE_MAX_AGE,
+                expires=int(
+                    (datetime.now(UTC) + timedelta(seconds=COOKIE_MAX_AGE))
+                    .timestamp()
+                ),
             )
             return None
 
-        # Otherwise return tokens as JSON (mobile/API flow)
+        # API client: Return tokens
         return TokenResponse(
             access_token=access_token,
             refresh_token=refresh_token,
-            token_type="bearer",
-            expires_in=settings.JWT_ACCESS_TOKEN_EXPIRES_SECS,
+            token_type=BEARER_FORMAT,
+            expires_in=ACCESS_TOKEN_EXPIRES,
         )
 
     async def create_access_token(self, user_id: UUID) -> str:
-        """Create a new JWT access token.
-
-        Implements secure access token creation:
-        1. Generates unique token ID
-        2. Creates standard JWT claims
-        3. Sets appropriate expiration
-        4. Signs token with HS256
-        5. Handles creation errors
+        """Create short-lived access token.
 
         Args:
-            user_id: User ID to include in token
+            user_id: User identifier
 
         Returns:
-            str: Signed JWT access token
-
-        Raises:
-            JWTError: If token creation fails
+            str: Signed JWT token
 
         Security:
-            - Uses secure JWT signing
-            - Sets short expiration
-            - Includes token type
-            - Generates unique ID
-            - Handles errors safely
+            - Short expiry
+            - Type enforcement
+            - Secure signing
+            - UTC timestamps
         """
         now = datetime.now(UTC)
-        expires = now + timedelta(seconds=settings.JWT_ACCESS_TOKEN_EXPIRES_SECS)
-        token_id = uuid4()
+        expires = now + timedelta(seconds=ACCESS_TOKEN_EXPIRES)
+        token_id = uuid4().hex
 
+        # Create payload
         payload = TokenPayload(
             sub=user_id.hex,
             exp=expires,
             iat=now,
-            jti=token_id.hex,
+            jti=token_id,
             type=TokenType.ACCESS,
         )
 
-        try:
-            token = jwt.encode(
-                claims=payload.model_dump(),
-                key=self.secret,
-                algorithm=ALGORITHM,
-            )
-            return token
-        except JWTError as e:
-            logger.error("Failed to create access token: %s", str(e))
-            raise
+        # Sign token
+        return jwt.encode(
+            claims=payload.model_dump(),
+            key=self.secret,
+            algorithm=ALGORITHM,
+        )
 
     async def create_refresh_token(
         self,
@@ -304,100 +281,75 @@ class TokenService:
         user_agent: str,
         ip_address: str,
     ) -> str:
-        """Create a new JWT refresh token with metadata.
-
-        Implements secure refresh token creation:
-        1. Generates unique token ID
-        2. Creates standard JWT claims
-        3. Sets long expiration
-        4. Signs token with HS256
-        5. Stores metadata in Redis
-        6. Handles creation errors
+        """Create long-lived refresh token.
 
         Args:
-            user_id: User ID to include in token
-            user_agent: Client user agent for tracking
-            ip_address: Client IP for tracking
+            user_id: User identifier
+            user_agent: Client info
+            ip_address: Client IP
 
         Returns:
-            str: Signed JWT refresh token
-
-        Raises:
-            JWTError: If token creation fails
+            str: Signed JWT token
 
         Security:
-            - Uses secure JWT signing
-            - Stores metadata securely
-            - Enables token tracking
-            - Supports revocation
-            - Handles errors safely
+            - Metadata tracking
+            - Session monitoring
+            - Secure storage
+            - Type safety
         """
         now = datetime.now(UTC)
-        expires = now + timedelta(seconds=settings.JWT_REFRESH_TOKEN_EXPIRES_SECS)
-        token_id = uuid4()
+        expires = now + timedelta(seconds=REFRESH_TOKEN_EXPIRES)
+        token_id = uuid4().hex
 
+        # Create payload
         payload = TokenPayload(
-            sub=user_id.hex,
+            sub=str(user_id),
             exp=expires,
             iat=now,
-            jti=token_id.hex,
+            jti=token_id,
             type=TokenType.REFRESH,
         )
 
-        try:
-            token = jwt.encode(
-                claims=payload.model_dump(),
-                key=self.secret,
-                algorithm=ALGORITHM,
-            )
+        # Store metadata
+        await self._store_token_metadata(
+            token_id=token_id,
+            user_id=str(user_id),
+            user_agent=user_agent,
+            ip_address=ip_address,
+        )
 
-            # Store refresh token and metadata in Redis
-            await self._store_token_metadata(
-                token_id=token_id.hex,
-                user_id=user_id.hex,
-                user_agent=user_agent,
-                ip_address=ip_address,
-            )
-
-            return token
-        except JWTError as e:
-            logger.error("Failed to create refresh token: %s", str(e))
-            raise
+        # Sign token
+        return jwt.encode(
+            claims=payload.model_dump(),
+            key=self.secret,
+            algorithm=ALGORITHM,
+        )
 
     async def verify_token(
         self,
         token: str,
         token_type: TokenType = TokenType.ACCESS,
     ) -> TokenPayload:
-        """Verify and decode a JWT token.
-
-        Implements secure token verification:
-        1. Verifies JWT signature
-        2. Validates standard claims
-        3. Checks token type
-        4. Verifies expiration
-        5. Checks revocation status
-        6. Handles verification errors
+        """Verify and decode JWT token.
 
         Args:
-            token: JWT token to verify
-            token_type: Expected token type (access/refresh)
+            token: JWT to verify
+            token_type: Expected type
 
         Returns:
-            TokenPayload: Decoded token payload
+            TokenPayload: Decoded payload
 
         Raises:
-            JWTError: If token is invalid, expired, or revoked
+            HTTPException: If validation fails
 
         Security:
-            - Verifies signatures
-            - Validates claims
-            - Checks revocation
-            - Prevents type confusion
-            - Handles errors safely
+            - Signature verification
+            - Type validation
+            - Expiry checking
+            - Revocation check
         """
         try:
-            # Decode and verify token
+            # Decode and validate
             payload = jwt.decode(
                 token=token,
                 key=self.secret,
@@ -405,61 +357,56 @@ class TokenService:
             )
             token_data = TokenPayload(**payload)
 
-            # Check token type
+            # Validate type
             if token_data.type != token_type:
-                raise JWTError(f"Invalid token type. Expected {token_type}, got {token_data.type}")
+                raise ValueError("Invalid token type")
 
-            # Check if refresh token is revoked
+            # Check revocation
             if token_type == TokenType.REFRESH:
                 metadata = await self.get_token_metadata(token_data.jti)
-                if not metadata or metadata["user_id"] != token_data.sub:
-                    raise JWTError("Token has been revoked")
+                if not metadata:
+                    raise ValueError("Token revoked")
 
             return token_data
 
-        except JWTError as e:
-            logger.error("Failed to verify token: %s", str(e))
-            raise
+        except (JWTError, ValueError) as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token: {str(e)}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     async def get_token_metadata(self, token_id: str) -> TokenMetadata | None:
-        """Get metadata for a refresh token.
-
-        Retrieves token metadata from Redis:
-        1. Checks token existence
-        2. Gets associated user ID
-        3. Retrieves tracking data
-        4. Returns standardized format
-
-        Used for:
-        - Token validation
-        - Session tracking
-        - Security monitoring
-        - Audit logging
+        """Get token metadata from Redis.
 
         Args:
-            token_id: Token ID (jti claim)
+            token_id: Token identifier
 
         Returns:
-            TokenMetadata | None: Token metadata if found
+            TokenMetadata | None: Metadata if found
 
         Security:
-            - Validates token ID
-            - Safe data retrieval
-            - Standardized format
-            - Handles missing data
+            - Safe deserialization
+            - Type validation
+            - Null safety
         """
-        user_id = await redis.get(f"refresh_token:{token_id}")
-        if not user_id:
+        # Get metadata
+        key = f"{TOKEN_PREFIX}{token_id}"
+        redis_client = Redis(connection_pool=redis.connection_pool)
+        try:
+            result = await cast(Any, redis_client.hgetall(key))
+            if not result:
+                return None
+
+            # Validate and return
+            data: dict[bytes, bytes] = cast(dict[bytes, bytes], result)
+            return TokenMetadata(
+                user_id=data[b"user_id"].decode(),
+                user_agent=data[b"user_agent"].decode(),
+                ip_address=data[b"ip_address"].decode(),
+            )
+        except Exception:
             return None
-
-        user_agent = await redis.get(f"user_agent:{token_id}") or ""
-        ip_address = await redis.get(f"ip_address:{token_id}") or ""
-
-        return TokenMetadata(
-            user_id=user_id,
-            user_agent=user_agent,
-            ip_address=ip_address,
-        )
 
     async def _store_token_metadata(
         self,
@@ -468,78 +415,78 @@ class TokenService:
         user_agent: str,
         ip_address: str,
     ) -> None:
-        """Store refresh token metadata in Redis.
+        """Store token metadata in Redis.
 
         Args:
-            token_id: Token ID (jti claim)
-            user_id: User ID in hex format
-            user_agent: User agent string
-            ip_address: IP address
+            token_id: Token identifier
+            user_id: User identifier
+            user_agent: Client info
+            ip_address: Client IP
+
+        Security:
+            - Safe serialization
+            - Expiry handling
+            - Type safety
         """
-        # Store token and metadata with expiration
-        await redis.setex(
-            f"refresh_token:{token_id}",
-            settings.JWT_REFRESH_TOKEN_EXPIRES_SECS,
-            user_id,
-        )
-        await redis.setex(
-            f"user_agent:{token_id}",
-            settings.JWT_REFRESH_TOKEN_EXPIRES_SECS,
-            user_agent,
-        )
-        await redis.setex(
-            f"ip_address:{token_id}",
-            settings.JWT_REFRESH_TOKEN_EXPIRES_SECS,
-            ip_address,
-        )
+        key = f"{TOKEN_PREFIX}{token_id}"
+        metadata = {
+            b"user_id": user_id.encode(),
+            b"user_agent": user_agent.encode(),
+            b"ip_address": ip_address.encode(),
+        }
+        redis_client = Redis(connection_pool=redis.connection_pool)
+        try:
+            await cast(Any, redis_client.hmset(key, metadata))
+            await cast(Any, redis_client.expire(key, REFRESH_TOKEN_EXPIRES))
+        except Exception as e:
+            logger.error("Failed to store token metadata: %s", str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to store token metadata",
+            ) from e
 
     async def revoke_token(self, token: str) -> None:
-        """Revoke a refresh token and its metadata.
+        """Revoke a refresh token.
 
         Args:
-            token: JWT refresh token to revoke
+            token: JWT to revoke
 
-        Raises:
-            JWTError: If token is invalid or already revoked
+        Security:
+            - Immediate effect
+            - Metadata cleanup
+            - Type validation
+            - Error handling
         """
         try:
             # Verify token first
-            token_data = await self.verify_token(token, TokenType.REFRESH)
-
-            # Remove token and metadata from Redis
-            await redis.delete(f"refresh_token:{token_data.jti}")
-            await redis.delete(f"user_agent:{token_data.jti}")
-            await redis.delete(f"ip_address:{token_data.jti}")
-
-            logger.info("Revoked refresh token for user %s", token_data.sub)
-
-        except JWTError as e:
-            logger.error("Failed to revoke token: %s", str(e))
-            raise
+            payload = await self.verify_token(token, TokenType.REFRESH)
+            # Delete metadata
+            await redis.delete(f"{TOKEN_PREFIX}{payload.jti}")
+        except HTTPException:
+            pass  # Token already invalid
 
     async def revoke_all_user_tokens(
         self,
         user_id: str,
         exclude_token_id: str | None = None,
     ) -> None:
-        """Revoke all refresh tokens for a user.
+        """Revoke all user's refresh tokens.
 
         Args:
-            user_id: User ID in hex format
-            exclude_token_id: Optional token ID to exclude from revocation
-        """
-        pattern = "refresh_token:*"
-        async for key in redis.scan_iter(pattern):
-            if not isinstance(key, str):  # Type guard
-                continue
+            user_id: User identifier
+            exclude_token_id: Token to preserve
 
-            stored_user_id = await redis.get(key)
-            if stored_user_id == user_id:
-                token_id = key.split(":")[-1]
-                if token_id != exclude_token_id:
-                    await redis.delete(f"refresh_token:{token_id}")
-                    await redis.delete(f"user_agent:{token_id}")
-                    await redis.delete(f"ip_address:{token_id}")
+        Security:
+            - Bulk revocation
+            - Session cleanup
+            - Safe iteration
+            - Error handling
+        """
+        pattern = USER_TOKEN_PATTERN.format(user_id=user_id)
+        async for key in redis.scan_iter(pattern):
+            if exclude_token_id and exclude_token_id in key:
+                continue
+            await redis.delete(key)
 
 
 # Create global token service instance

@@ -1,7 +1,9 @@
 [project]
 name = "auth-py"
 version = "0.1.0"
-description = "RFC IETF Compliant Authentication Service"
+description = """
+Proof of concept (PoC) for a modern authentication service built with FastAPI.
+"""
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
