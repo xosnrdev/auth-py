@@ -36,7 +36,7 @@ from enum import Enum
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 
-from app.api.v1.auth.dependencies import DBSession
+from app.api.v1.dependencies import DBSession
 from app.core.auth import requires_admin
 from app.core.config import settings
 from app.core.jwt import TokenResponse, token_service

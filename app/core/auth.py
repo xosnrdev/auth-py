@@ -1,4 +1,10 @@
-"""Authorization utilities for role-based access control."""
+"""Authentication utilities and decorators.
+
+This module implements secure authentication utilities following RFC standards:
+- Role-based access control (RBAC)
+- Permission checking
+- Security decorators
+"""
 
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -7,19 +13,24 @@ from typing import Annotated, ParamSpec, TypeVar
 
 from fastapi import Depends, HTTPException, status
 
-from app.api.v1.auth.dependencies import get_current_user
+from app.api.v1.dependencies import get_current_user
 from app.models import User
 
-# Type variables for decorator
+# Type variables for generic function signatures
 P = ParamSpec("P")
 T = TypeVar("T")
 
 
 class RequireMode(str, Enum):
-    """Mode for role requirements."""
+    """Mode for role requirement checking.
 
-    ANY = "any"  # User must have any of the specified roles
-    ALL = "all"  # User must have all specified roles
+    Modes:
+        ANY: User must have any of the required roles
+        ALL: User must have all required roles
+    """
+
+    ANY = "any"
+    ALL = "all"
 
 
 def requires(

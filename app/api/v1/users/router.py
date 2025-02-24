@@ -51,7 +51,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.v1.auth.dependencies import CurrentUser, DBSession
+from app.api.v1.dependencies import CurrentUser, DBSession
 from app.core.config import settings
 from app.core.redis import redis
 from app.core.security import get_password_hash
@@ -252,13 +252,10 @@ async def verify_email(
         details="Email verified",
     )
     db.add(audit_log)
-
     await db.commit()
 
     return {"message": "Email verified successfully"}
 
-
-# User Self-Management Endpoints
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_profile(
@@ -266,22 +263,11 @@ async def get_current_user_profile(
 ) -> User:
     """Get current user's profile data.
 
-    Implements secure profile retrieval:
-    1. Authenticates user
-    2. Returns sanitized data
-    3. Excludes sensitive fields
-
     Args:
-        current_user: Authenticated user from token
+        current_user: Current authenticated user
 
     Returns:
         User: Current user's profile data
-
-    Security:
-        - Requires authentication
-        - Sanitizes output
-        - Rate limited
-        - Audit logged
     """
     return current_user
 
@@ -295,34 +281,23 @@ async def update_current_user_profile(
 ) -> User:
     """Update current user's profile data.
 
-    Implements secure profile updates:
-    1. Validates input data
-    2. Updates allowed fields
-    3. Hashes new password
-    4. Logs changes
-    5. Returns updated profile
-
     Args:
         request: FastAPI request object
-        user_update: Update data with validation
-        current_user: Authenticated user
+        user_update: User update data
+        current_user: Current authenticated user
         db: Database session
 
     Returns:
         User: Updated user profile
 
-    Security:
-        - Validates input
-        - Hashes passwords
-        - Rate limited
-        - Logs changes
-        - CSRF protected
+    Raises:
+        HTTPException:
+            - 400: Email already taken
+            - 400: Phone already taken
     """
-    # Update fields if provided
-    if user_update.phone is not None:
-        current_user.phone = user_update.phone
-    if user_update.password:
-        current_user.password_hash = get_password_hash(user_update.password)
+    # Update user fields
+    for field, value in user_update.model_dump(exclude_unset=True).items():
+        setattr(current_user, field, value)
 
     # Log update
     audit_log = AuditLog(
@@ -330,12 +305,25 @@ async def update_current_user_profile(
         action="update_profile",
         ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
-        details="Updated own profile",
+        details="Profile updated",
     )
     db.add(audit_log)
 
-    await db.commit()
-    await db.refresh(current_user)
+    try:
+        await db.commit()
+        await db.refresh(current_user)
+    except IntegrityError as e:
+        await db.rollback()
+        error_detail = "Update failed due to a conflict"
+        if "ix_users_email" in str(e):
+            error_detail = "Email already taken"
+        elif "ix_users_phone" in str(e):
+            error_detail = "Phone number already taken"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error_detail,
+        ) from e
+
     return current_user
 
 
@@ -345,18 +333,11 @@ async def resend_verification_email(
     current_user: CurrentUser,
     db: DBSession,
 ) -> dict[str, str]:
-    """Resend verification email to current user.
-
-    Implements secure email verification resend:
-    1. Checks verification status
-    2. Generates new verification code
-    3. Updates expiration time
-    4. Sends verification email
-    5. Logs resend attempt
+    """Resend verification email for current user.
 
     Args:
         request: FastAPI request object
-        current_user: Authenticated user
+        current_user: Current authenticated user
         db: Database session
 
     Returns:
@@ -365,18 +346,21 @@ async def resend_verification_email(
     Raises:
         HTTPException:
             - 400: Already verified
-            - 500: Email sending failed
-
-    Security:
-        - Requires authentication
-        - Rate limited
-        - Logs attempts
-        - Time-limited codes
+            - 429: Too many requests
     """
+    # Check if already verified
     if current_user.is_verified:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already verified",
+        )
+
+    # Rate limit check
+    rate_limit_key = f"resend_verification:{current_user.id}"
+    if await redis.exists(rate_limit_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Please wait before requesting another verification email",
         )
 
     # Generate new verification code
@@ -387,6 +371,17 @@ async def resend_verification_email(
     current_user.verification_code = verification_code
     current_user.verification_code_expires_at = verification_expires
 
+    # Log resend
+    audit_log = AuditLog(
+        user_id=current_user.id,
+        action="resend_verification",
+        ip_address=get_client_ip(request),
+        user_agent=request.headers.get("user-agent", ""),
+        details="Verification email resent",
+    )
+    db.add(audit_log)
+    await db.commit()
+
     # Send verification email
     try:
         await email_service.send_verification_email(
@@ -395,22 +390,27 @@ async def resend_verification_email(
         )
     except Exception as e:
         logger.error("Failed to send verification email: %s", str(e))
+        error_log = AuditLog(
+            user_id=current_user.id,
+            action="send_verification_email",
+            ip_address=get_client_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
+            details=f"Failed to send verification email: {str(e)}",
+        )
+        db.add(error_log)
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to send verification email",
         ) from e
 
-    # Log action
-    audit_log = AuditLog(
-        user_id=current_user.id,
-        action="resend_verification",
-        ip_address=get_client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        details="Requested new verification email",
+    # Set rate limit
+    await redis.setex(
+        rate_limit_key,
+        settings.VERIFICATION_RESEND_RATE_LIMIT,
+        "1",
     )
-    db.add(audit_log)
 
-    await db.commit()
     return {"message": "Verification email sent"}
 
 
@@ -422,24 +422,18 @@ async def delete_current_user(
 ) -> None:
     """Delete current user's account.
 
-    Implements secure account deletion:
-    1. Authenticates user
-    2. Logs deletion request
-    3. Removes user data
-    4. Cascades deletions
-    5. Revokes sessions
-
     Args:
         request: FastAPI request object
-        current_user: Authenticated user
+        current_user: Current authenticated user
         db: Database session
+
+    Returns:
+        None
 
     Security:
         - Requires authentication
         - Logs deletion
-        - Cascading delete
-        - Session cleanup
-        - Rate limited
+        - Cascades deletion
     """
     # Log deletion
     audit_log = AuditLog(
@@ -447,7 +441,7 @@ async def delete_current_user(
         action="delete_account",
         ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
-        details="Self-deleted account",
+        details="Account deleted",
     )
     db.add(audit_log)
 
@@ -461,65 +455,48 @@ async def list_active_sessions(
     current_user: CurrentUser,
     db: DBSession,
 ) -> list[dict[str, str | int]]:
-    """List user's active sessions based on refresh tokens.
-
-    Implements secure session listing:
-    1. Retrieves active refresh tokens
-    2. Gets session metadata
-    3. Includes IP and user agent
-    4. Shows creation time
-    5. Supports session management
+    """List all active sessions for current user.
 
     Args:
-        current_user: Authenticated user
+        current_user: Current authenticated user
         db: Database session
 
     Returns:
-        list[dict]: Active sessions with metadata
-            Format: [{
-                "id": "token_id",
-                "ip_address": "client_ip",
-                "user_agent": "browser_info",
-                "created_at": timestamp
-            }]
+        list: List of active sessions with metadata
 
     Security:
         - Requires authentication
-        - Shows only own sessions
-        - Rate limited
-        - Sanitized output
+        - Shows only user's sessions
+        - Includes metadata
     """
-    # Get all active refresh tokens for user
-    pattern = "refresh_token:*"
-    sessions: list[dict[str, str | int]] = []
+    # Get all active sessions from Redis
+    session_pattern = f"session:{current_user.id}:*"
+    session_keys = await redis.keys(session_pattern)
+    sessions = []
 
-    async for key in redis.scan_iter(pattern):
-        user_id = await redis.get(key)
-        if not isinstance(key, str):  # Type guard
+    for key in session_keys:
+        # Get session data
+        session_data: dict[str, str] = await redis.hgetall(key)  # type: ignore
+        if not session_data:
             continue
-        if user_id == current_user.id.hex:
-            # Get token creation time from key
-            parts: list[str] = key.split(":")
-            if len(parts) < 2:  # Skip malformed keys
-                continue
-            token_id = parts[-1]
-            # Get associated audit log
-            stmt = select(AuditLog).where(
-                AuditLog.user_id == current_user.id,
-                AuditLog.action == "login",
-                AuditLog.details.contains(token_id),
-            ).order_by(AuditLog.timestamp.desc()).limit(1)
-            result = await db.execute(stmt)
-            log = result.scalar_one_or_none()
 
-            if log:
-                session_data: dict[str, str | int] = {
-                    "id": token_id,
-                    "ip_address": log.ip_address,
-                    "user_agent": log.user_agent,
-                    "created_at": int(log.timestamp.timestamp()),
-                }
-                sessions.append(session_data)
+        # Get audit log for session start
+        stmt = select(AuditLog).where(
+            AuditLog.user_id == current_user.id,
+            AuditLog.action == "login",
+            AuditLog.details.like(f"%{session_data.get('jti', '')}%"),
+        )
+        result = await db.execute(stmt)
+        audit_log = result.scalar_one_or_none()
+
+        # Add session info
+        sessions.append({
+            "id": session_data.get("jti", "unknown"),
+            "ip_address": audit_log.ip_address if audit_log else "unknown",
+            "user_agent": audit_log.user_agent if audit_log else "unknown",
+            "created_at": audit_log.created_at.isoformat() if audit_log else "unknown",
+            "expires_in": await redis.ttl(key),
+        })
 
     return sessions
 
@@ -530,18 +507,11 @@ async def revoke_all_sessions(
     current_user: CurrentUser,
     db: DBSession,
 ) -> dict[str, str]:
-    """Revoke all user's sessions except current one.
-
-    Implements secure session revocation:
-    1. Identifies current session
-    2. Lists all active sessions
-    3. Revokes other sessions
-    4. Preserves current session
-    5. Logs revocation
+    """Revoke all active sessions for current user.
 
     Args:
         request: FastAPI request object
-        current_user: Authenticated user
+        current_user: Current authenticated user
         db: Database session
 
     Returns:
@@ -549,34 +519,25 @@ async def revoke_all_sessions(
 
     Security:
         - Requires authentication
-        - Preserves current session
-        - Rate limited
-        - Logs revocation
+        - Revokes all sessions
+        - Logs action
         - Immediate effect
     """
-    # Get all active refresh tokens for user
-    pattern = "refresh_token:*"
-    current_token_id = None
+    # Get all active sessions
+    session_pattern = f"session:{current_user.id}:*"
+    session_keys = await redis.keys(session_pattern)
 
-    # Get current token ID from request
-    refresh_token = request.cookies.get("refresh_token")
-    if refresh_token:
-        token_parts = refresh_token.split(":")
-        if len(token_parts) >= 2:
-            current_token_id = token_parts[-1]
+    # Delete all sessions
+    if session_keys:
+        await redis.delete(*session_keys)
 
-    # Revoke all tokens except current one
-    async for key in redis.scan_iter(pattern):
-        user_id = await redis.get(key)
-        if not isinstance(key, str):  # Type guard
-            continue
-        if user_id == current_user.id.hex:
-            parts: list[str] = key.split(":")
-            if len(parts) < 2:  # Skip malformed keys
-                continue
-            token_id = parts[-1]
-            if token_id != current_token_id:
-                await redis.delete(key)
+    # Get all refresh tokens
+    refresh_pattern = f"refresh_token:{current_user.id}:*"
+    refresh_keys = await redis.keys(refresh_pattern)
+
+    # Delete all refresh tokens
+    if refresh_keys:
+        await redis.delete(*refresh_keys)
 
     # Log action
     audit_log = AuditLog(
@@ -584,12 +545,12 @@ async def revoke_all_sessions(
         action="revoke_all_sessions",
         ip_address=get_client_ip(request),
         user_agent=request.headers.get("user-agent", ""),
-        details="Revoked all other sessions",
+        details=f"Revoked {len(session_keys)} sessions and {len(refresh_keys)} refresh tokens",
     )
     db.add(audit_log)
     await db.commit()
 
-    return {"message": "All other sessions have been revoked"}
+    return {"message": "All sessions revoked successfully"}
 
 
 @router.get("/me/audit-log", response_model=list[dict[str, str | int | None]])
@@ -598,53 +559,42 @@ async def get_account_activity(
     db: DBSession,
     limit: int = 50,
 ) -> list[dict[str, str | int | None]]:
-    """Get recent account activity with filtering.
-
-    Implements secure activity logging:
-    1. Retrieves recent activities
-    2. Filters by user
-    3. Orders by timestamp
-    4. Limits result set
-    5. Sanitizes output
+    """Get recent account activity for current user.
 
     Args:
-        current_user: Authenticated user
+        current_user: Current authenticated user
         db: Database session
-        limit: Maximum number of events to return
+        limit: Maximum number of records to return
 
     Returns:
-        list[dict]: Recent activity events
-            Format: [{
-                "action": "event_type",
-                "ip_address": "client_ip",
-                "user_agent": "browser_info",
-                "details": "event_details",
-                "timestamp": unix_timestamp
-            }]
+        list: Recent account activity records
 
     Security:
         - Requires authentication
-        - Shows only own activity
-        - Rate limited
-        - Sanitized output
-        - Limited result set
+        - Shows only user's activity
+        - Paginated results
     """
-    stmt = select(AuditLog).where(
-        AuditLog.user_id == current_user.id
-    ).order_by(
-        AuditLog.timestamp.desc()
-    ).limit(limit)
-
+    # Get recent audit logs
+    stmt = (
+        select(AuditLog)
+        .where(AuditLog.user_id == current_user.id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+    )
     result = await db.execute(stmt)
-    logs = result.scalars().all()
+    audit_logs = result.scalars().all()
 
-    return [{
-        "action": log.action,
-        "ip_address": log.ip_address,
-        "user_agent": log.user_agent,
-        "details": log.details,
-        "timestamp": int(log.timestamp.timestamp()),
-    } for log in logs]
+    # Format logs
+    return [
+        {
+            "action": log.action,
+            "ip_address": log.ip_address,
+            "user_agent": log.user_agent,
+            "details": log.details,
+            "created_at": log.created_at.isoformat(),
+        }
+        for log in audit_logs
+    ]
 
 
 @router.post("/verify-email/resend", response_model=dict[str, str])
@@ -653,85 +603,81 @@ async def resend_verification_email_public(
     email_in: EmailRequest,
     db: DBSession,
 ) -> dict[str, str]:
-    """Resend verification email to any unverified user.
-
-    Implements secure public verification resend:
-    1. Accepts email address
-    2. Checks verification status
-    3. Generates new verification code
-    4. Sends verification email
-    5. Prevents email enumeration
-    6. Logs resend attempt
-
-    This endpoint is public and does not require authentication.
-    It will only work for unverified users to prevent email spam.
-    Returns same response regardless of email existence or status.
+    """Resend verification email for unverified users.
 
     Args:
         request: FastAPI request object
-        email_in: Email address to resend verification
+        email_in: Email request data
         db: Database session
 
     Returns:
-        dict: Success message (intentionally vague)
+        dict: Success message
 
     Security:
-        - No authentication required
+        - Rate limited
         - Prevents email enumeration
-        - Rate limited by email
-        - Logs all attempts
-        - Time-limited codes
+        - Logs attempts
     """
+    # Rate limit check
+    rate_limit_key = f"resend_verification_public:{get_client_ip(request)}"
+    if await redis.exists(rate_limit_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Please wait before requesting another verification email",
+        )
+
     # Find user by email
-    stmt = select(User).where(User.email == email_in.email.lower())
+    stmt = select(User).where(
+        User.email == email_in.email,
+        User.is_verified.is_(False),
+    )
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
-    if not user:
-        # Return success even if user doesn't exist to prevent email enumeration
-        return {"message": "If the email exists and is unverified, a new verification email has been sent"}
+    if user:
+        # Generate new verification code
+        verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
+        verification_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
 
-    if user.is_verified:
-        # Return success even if already verified to prevent email enumeration
-        return {"message": "If the email exists and is unverified, a new verification email has been sent"}
+        # Update user
+        user.verification_code = verification_code
+        user.verification_code_expires_at = verification_expires
 
-    # Generate new verification code
-    verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
-    verification_expires = datetime.now(UTC) + timedelta(hours=settings.VERIFICATION_CODE_EXPIRES_HOURS)
-
-    # Update user
-    user.verification_code = verification_code
-    user.verification_code_expires_at = verification_expires
-
-    # Send verification email
-    try:
-        await email_service.send_verification_email(
-            to_email=user.email,
-            verification_code=verification_code,
-        )
-    except Exception as e:
-        logger.error("Failed to send verification email: %s", str(e))
-        # Log error but return success to prevent email enumeration
-        error_log = AuditLog(
+        # Log resend
+        audit_log = AuditLog(
             user_id=user.id,
-            action="resend_verification_email",
+            action="resend_verification_public",
             ip_address=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
-            details=f"Failed to send verification email: {str(e)}",
+            details="Verification email resent",
         )
-        db.add(error_log)
+        db.add(audit_log)
         await db.commit()
-        return {"message": "If the email exists and is unverified, a new verification email has been sent"}
 
-    # Log action
-    audit_log = AuditLog(
-        user_id=user.id,
-        action="resend_verification",
-        ip_address=get_client_ip(request),
-        user_agent=request.headers.get("user-agent", ""),
-        details="Requested new verification email",
+        # Send verification email
+        try:
+            await email_service.send_verification_email(
+                to_email=user.email,
+                verification_code=verification_code,
+            )
+        except Exception as e:
+            logger.error("Failed to send verification email: %s", str(e))
+            error_log = AuditLog(
+                user_id=user.id,
+                action="send_verification_email",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details=f"Failed to send verification email: {str(e)}",
+            )
+            db.add(error_log)
+            await db.commit()
+
+    # Set rate limit
+    await redis.setex(
+        rate_limit_key,
+        settings.VERIFICATION_RESEND_RATE_LIMIT,
+        "1",
     )
-    db.add(audit_log)
 
-    await db.commit()
+    # Return generic message to prevent email enumeration
     return {"message": "If the email exists and is unverified, a new verification email has been sent"}

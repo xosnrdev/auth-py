@@ -1,4 +1,4 @@
-"""Dependencies for authentication endpoints.
+"""Dependencies for API endpoints.
 
 This module implements secure FastAPI dependencies following RFC standards:
 - JWT Bearer token validation (RFC 6750)
@@ -7,7 +7,7 @@ This module implements secure FastAPI dependencies following RFC standards:
 - Token type enforcement
 - Security best practices
 
-The dependencies in this module are used across the authentication system to:
+The dependencies in this module are used across the API system to:
 1. Validate and verify access tokens
 2. Retrieve authenticated users
 3. Manage database sessions
