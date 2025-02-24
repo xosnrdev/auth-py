@@ -82,18 +82,6 @@ Critical Security Notes:
    - CORS compliance
    - Cache control
    - Content security
-
-Power of Ten Compliance:
-1. Simple Control Flow      ✓ Linear error handling
-2. Fixed Loop Bounds       ✓ No complex loops
-3. Dynamic Memory          ✓ Controlled allocation
-4. Single Entry/Exit       ✓ Clear error paths
-5. Error Handling         ✓ Comprehensive handling
-6. Restricted Scope       ✓ Module-level encapsulation
-7. Limited Functions      ✓ Focused handlers
-8. Assertions/Limits      ✓ Input validation
-9. Restricted Pointers    ✓ No pointer manipulation
-10. Restricted Types      ✓ Type-safe responses
 """
 
 from http import HTTPStatus
