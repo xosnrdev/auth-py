@@ -110,6 +110,11 @@ class User(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    pending_email: Mapped[str | None] = mapped_column(
+        String(MAX_EMAIL_LENGTH),
+        nullable=True,
+        index=True,
+    )
 
     # Password reset
     reset_token: Mapped[str | None] = mapped_column(

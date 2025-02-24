@@ -258,6 +258,12 @@ class Settings(BaseSettings):
         default="/verify-email",
         pattern=r"^/[a-zA-Z0-9\-/]+$",
     )
+    VERIFICATION_RESEND_RATE_LIMIT: int = Field(
+        default=3600,  # 1 hour
+        gt=0,
+        le=86400,  # 24 hours
+        description="Rate limit window for verification email resend in seconds",
+    )
     PASSWORD_RESET_URL_PATH: str = Field(
         default="/reset-password",
         pattern=r"^/[a-zA-Z0-9\-/]+$",

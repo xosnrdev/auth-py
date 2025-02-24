@@ -12,7 +12,7 @@ curl http://localhost:8000/health
     "checks": {
         "database": "connected",
         "redis": "connected",
-        "timestamp": "2024-02-23T10:20:30Z"
+        "timestamp": "2025-02-24T10:20:30Z"
     }
 }
 ```

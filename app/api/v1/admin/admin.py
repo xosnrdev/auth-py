@@ -12,17 +12,17 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 
-from app.api.v1.auth.dependencies import CurrentUser, DBSession
+from app.api.v1.dependencies import CurrentUser, DBSession
 from app.core.auth import requires_admin, requires_super_admin
 from app.core.security import get_password_hash
 from app.models import AuditLog, User
 from app.schemas import UserResponse, UserUpdate
 from app.utils.request import get_client_ip
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/users", tags=["admin"])
 
 
-@router.get("/users", response_model=list[UserResponse])
+@router.get("", response_model=list[UserResponse])
 @requires_admin
 async def list_users(
     db: DBSession,
@@ -57,7 +57,7 @@ async def list_users(
     return list(result.scalars().all())
 
 
-@router.get("/users/{user_id}", response_model=UserResponse)
+@router.get("/{user_id}", response_model=UserResponse)
 @requires_admin
 async def get_user(
     user_id: UUID,
@@ -100,7 +100,7 @@ async def get_user(
     return user
 
 
-@router.patch("/users/{user_id}", response_model=UserResponse)
+@router.patch("/{user_id}", response_model=UserResponse)
 @requires_admin
 async def update_user(
     request: Request,
@@ -176,7 +176,7 @@ async def update_user(
     return user
 
 
-@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 @requires_admin
 async def delete_user(
     request: Request,
@@ -231,7 +231,7 @@ async def delete_user(
     await db.commit()
 
 
-@router.post("/users/{user_id}/roles/{role}", status_code=status.HTTP_200_OK)
+@router.post("/{user_id}/roles/{role}", status_code=status.HTTP_200_OK)
 @requires_super_admin
 async def add_role(
     request: Request,
@@ -296,7 +296,7 @@ async def add_role(
     return {"roles": user.roles}
 
 
-@router.delete("/users/{user_id}/roles/{role}", status_code=status.HTTP_200_OK)
+@router.delete("/{user_id}/roles/{role}", status_code=status.HTTP_200_OK)
 @requires_super_admin
 async def remove_role(
     request: Request,

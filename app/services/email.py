@@ -220,4 +220,40 @@ class EmailService:
             text_content=text_content,
         )
 
+    async def send_email_change_notification(
+        self,
+        to_email: EmailStr,
+        new_email: str,
+    ) -> None:
+        """Send notification about email address change.
+
+        Args:
+            to_email: Old email address
+            new_email: New email address
+
+        Raises:
+            RuntimeError: If sending fails
+        """
+        # Validate inputs
+        assert new_email, "New email required"
+
+        # Create content
+        text_content = (
+            f"Your email address has been changed to {new_email}.\n\n"
+            f"If you did not request this change, please contact support immediately."
+        )
+
+        html_content = (
+            f"<h2>Email Address Changed</h2>"
+            f"<p>Your email address has been changed to <strong>{new_email}</strong>.</p>"
+            f"<p>If you did not request this change, please contact support immediately.</p>"
+        )
+
+        await self._send_email(
+            to_email=to_email,
+            subject="Email Address Changed",
+            html_content=html_content,
+            text_content=text_content,
+        )
+
 email_service = EmailService()

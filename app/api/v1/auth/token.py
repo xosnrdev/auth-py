@@ -17,7 +17,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError
 from sqlalchemy import select
 
-from app.api.v1.auth.dependencies import CurrentUser, DBSession, Token
+from app.api.v1.dependencies import CurrentUser, DBSession, Token
 from app.core.config import settings
 from app.core.jwt import TokenResponse, TokenType, token_service
 from app.core.security import get_password_hash, verify_password
