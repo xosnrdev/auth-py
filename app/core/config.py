@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     )
     PROJECT_DESCRIPTION: str = Field(
         default="Authentication Service API",
-        description="Project description for API docs",
+        description="Proof of concept (PoC) for a modern authentication service built with FastAPI.",
         min_length=1,
         max_length=1000,
     )
