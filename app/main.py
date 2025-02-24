@@ -35,7 +35,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.api.v1 import router as api_v1_router
-from app.core.errors import http_exception_handler, validation_exception_handler
+from app.core.errors import http_error_handler, validation_error_handler
 from app.core.metadata import load_project_metadata
 from app.core.middleware import (
     RateLimitMiddleware,
@@ -204,11 +204,11 @@ app.openapi = custom_openapi  # type: ignore
 # Register error handlers
 app.add_exception_handler(
     HTTPException,
-    http_exception_handler,  # type: ignore
+    http_error_handler,  # type: ignore
 )
 app.add_exception_handler(
     RequestValidationError,
-    validation_exception_handler,  # type: ignore
+    validation_error_handler,  # type: ignore
 )
 
 @app.middleware("http")
