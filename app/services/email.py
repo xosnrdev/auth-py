@@ -49,28 +49,59 @@ MIME_TYPE_HTML: Final[str] = "html"
 MIME_TYPE_ALTERNATIVE: Final[str] = "alternative"
 
 
+class EmailError(Exception):
+    """Base exception for email service errors.
+
+    Provides a safe, user-friendly message while logging the actual error.
+    """
+    def __init__(self, message: str, detail: str | None = None) -> None:
+        """Initialize with user-safe message and optional detail for logging.
+
+        Args:
+            message: Safe message for user display
+            detail: Detailed error for logging
+        """
+        self.message = message
+        self.detail = detail or message
+        super().__init__(self.message)
+
+
 class EmailService:
     """Async email service with secure SMTP delivery and templates."""
 
     def __init__(self) -> None:
         """Initialize with SMTP settings from environment."""
-        # Assert required settings
-        assert settings.SMTP_HOST, "SMTP_HOST must be set"
-        assert settings.SMTP_PORT, "SMTP_PORT must be set"
-        assert settings.SMTP_USER, "SMTP_USER must be set"
-        assert settings.SMTP_PASSWORD, "SMTP_PASSWORD must be set"
-        assert settings.SMTP_FROM_EMAIL, "SMTP_FROM_EMAIL must be set"
-        assert settings.SMTP_FROM_NAME, "SMTP_FROM_NAME must be set"
-        assert settings.APP_URL.startswith("https://") or settings.APP_URL.startswith("http://localhost"), (
-            "APP_URL must use HTTPS in production"
-        )
+        try:
+            # Assert required settings
+            assert settings.SMTP_HOST, "SMTP_HOST must be set"
+            assert settings.SMTP_PORT, "SMTP_PORT must be set"
+            assert settings.SMTP_USER, "SMTP_USER must be set"
+            assert settings.SMTP_PASSWORD, "SMTP_PASSWORD must be set"
+            assert settings.SMTP_FROM_EMAIL, "SMTP_FROM_EMAIL must be set"
+            assert settings.SMTP_FROM_NAME, "SMTP_FROM_NAME must be set"
+            assert settings.APP_URL.startswith("https://") or settings.APP_URL.startswith("http://localhost"), (
+                "APP_URL must use HTTPS in production"
+            )
 
-        self.host: str = settings.SMTP_HOST
-        self.port: int = settings.SMTP_PORT
-        self.username: str = settings.SMTP_USER
-        self.password: SecretStr = settings.SMTP_PASSWORD
-        self.from_email: EmailStr = settings.SMTP_FROM_EMAIL
-        self.from_name: str = settings.SMTP_FROM_NAME
+            self.host: str = settings.SMTP_HOST
+            self.port: int = settings.SMTP_PORT
+            self.username: str = settings.SMTP_USER
+            self.password: SecretStr = settings.SMTP_PASSWORD
+            self.from_email: EmailStr = settings.SMTP_FROM_EMAIL
+            self.from_name: str = settings.SMTP_FROM_NAME
+
+        except AssertionError as e:
+            logger.error("Email service configuration error: %s", str(e))
+            raise EmailError(
+                message="Email service configuration error",
+                detail=f"Configuration error: {str(e)}"
+            )
+        except Exception as e:
+            logger.error("Unexpected error during email service initialization: %s", str(e))
+            raise EmailError(
+                message="Email service initialization failed",
+                detail=f"Initialization error: {str(e)}"
+            )
 
     async def _send_email(
         self,
@@ -88,47 +119,73 @@ class EmailService:
             text_content: Plain text version
 
         Raises:
-            RuntimeError: If sending fails after retries
+            EmailError: If sending fails after retries
         """
-        # Validate inputs
-        assert len(subject) <= MAX_SUBJECT_LENGTH, f"Subject exceeds {MAX_SUBJECT_LENGTH} chars"
-        assert html_content, "HTML content required"
-        assert text_content, "Text content required"
+        try:
+            # Validate inputs
+            assert len(subject) <= MAX_SUBJECT_LENGTH, f"Subject exceeds {MAX_SUBJECT_LENGTH} chars"
+            assert html_content, "HTML content required"
+            assert text_content, "Text content required"
 
-        # Create message
-        msg = MIMEMultipart(MIME_TYPE_ALTERNATIVE)
-        msg["Subject"] = subject
-        msg["From"] = f"{self.from_name} <{self.from_email}>"
-        msg["To"] = str(to_email)
-        msg.attach(MIMEText(text_content, MIME_TYPE_PLAIN))
-        msg.attach(MIMEText(html_content, MIME_TYPE_HTML))
+            # Create message
+            msg = MIMEMultipart(MIME_TYPE_ALTERNATIVE)
+            msg["Subject"] = subject
+            msg["From"] = f"{self.from_name} <{self.from_email}>"
+            msg["To"] = str(to_email)
+            msg.attach(MIMEText(text_content, MIME_TYPE_PLAIN))
+            msg.attach(MIMEText(html_content, MIME_TYPE_HTML))
 
-        # Send with retries
-        last_error: Exception | None = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                async with aiosmtplib.SMTP(
-                    hostname=self.host,
-                    port=self.port,
-                    use_tls=True,
-                ) as smtp:
-                    await smtp.login(self.username, self.password.get_secret_value())
-                    await smtp.send_message(msg)
-                    logger.info("Email sent to %s", to_email)
-                    return
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "Attempt %d: Failed to send email to %s: %s",
-                    attempt + 1,
-                    to_email,
-                    str(e),
-                )
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+            # Send with retries
+            last_error: Exception | None = None
+            for attempt in range(MAX_RETRIES):
+                try:
+                    async with aiosmtplib.SMTP(
+                        hostname=self.host,
+                        port=self.port,
+                        use_tls=True,
+                    ) as smtp:
+                        await smtp.login(self.username, self.password.get_secret_value())
+                        await smtp.send_message(msg)
+                        logger.info("Email sent to %s", to_email)
+                        return
+                except aiosmtplib.SMTPAuthenticationError as e:
+                    logger.error("SMTP authentication failed: %s", str(e))
+                    raise EmailError(
+                        message="Email service authentication failed",
+                        detail=f"SMTP auth error: {str(e)}"
+                    )
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        "Attempt %d: Failed to send email to %s: %s",
+                        attempt + 1,
+                        to_email,
+                        str(e),
+                    )
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(RETRY_DELAY_SECONDS)
 
-        assert last_error is not None
-        raise RuntimeError(f"Failed to send email after {MAX_RETRIES} attempts") from last_error
+            assert last_error is not None
+            logger.error("Email sending failed after %d attempts: %s", MAX_RETRIES, str(last_error))
+            raise EmailError(
+                message="Failed to send email",
+                detail=f"Failed after {MAX_RETRIES} attempts: {str(last_error)}"
+            )
+
+        except AssertionError as e:
+            logger.error("Email validation error: %s", str(e))
+            raise EmailError(
+                message="Email validation failed",
+                detail=f"Validation error: {str(e)}"
+            )
+        except EmailError:
+            raise
+        except Exception as e:
+            logger.error("Unexpected error during email sending: %s", str(e))
+            raise EmailError(
+                message="Failed to send email",
+                detail=f"Unexpected error: {str(e)}"
+            )
 
     async def send_verification_email(
         self,

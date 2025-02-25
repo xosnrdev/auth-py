@@ -60,7 +60,7 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from app.models import AuditLog, User
 from app.schemas import EmailRequest, UserCreate, UserResponse, UserUpdate
-from app.services.email import email_service
+from app.services.email import EmailError, email_service
 from app.utils.request import get_client_ip
 
 # Configure module logger
@@ -542,6 +542,7 @@ async def request_email_change(
         HTTPException:
             - 400: Invalid email or already in use
             - 409: Email already registered
+            - 500: Email service error
     """
     # Check if email is different
     new_email = email_in.email.lower()
@@ -589,20 +590,22 @@ async def request_email_change(
             to_email=new_email,
             verification_code=verification_code,
         )
-    except Exception as e:
-        logger.error("Failed to send verification email: %s", str(e))
+    except EmailError as e:
+        logger.error("Email change request failed: %s", e.detail)
+        # Log the error
         audit_log = AuditLog(
             user_id=current_user.id,
             action="send_verification_email",
             ip_address=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
-            details=f"Failed to send verification email: {str(e)}",
+            details=f"Failed to send verification email: {e.detail}",
         )
         db.add(audit_log)
         await db.commit()
+        # Return a user-friendly error
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email",
+            detail="Unable to send verification email. Please try again later.",
         )
 
     return {"message": "Verification email sent to new address"}
