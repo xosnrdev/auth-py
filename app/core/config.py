@@ -71,8 +71,8 @@ MIN_SECRET_LENGTH: Final[int] = 32
 MAX_ACCESS_TOKEN_EXPIRES: Final[int] = 3600
 MAX_REFRESH_TOKEN_EXPIRES: Final[int] = 604800
 SECURE_SMTP_PORTS: Final[tuple[int, ...]] = (465, 587)
-DEFAULT_RATE_LIMIT: Final[int] = 5
-DEFAULT_RATE_WINDOW: Final[int] = 60
+DEFAULT_RATE_LIMIT: Final[int] = 10  # 10 requests per minute
+DEFAULT_RATE_WINDOW: Final[int] = 60  # 1 minute window
 MIN_VERIFICATION_CODE_LENGTH: Final[int] = 16
 
 

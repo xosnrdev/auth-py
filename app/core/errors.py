@@ -94,7 +94,38 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # Error type constants
 DEFAULT_ERROR_TYPE: Final[str] = "about:blank"
-VALIDATION_ERROR_TYPE: Final[str] = "validation_error"
+VALIDATION_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:7807:validation"
+AUTH_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:7807:auth"
+RATE_LIMIT_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:6585:status:429"
+RESOURCE_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:7231:status:404"
+SERVER_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:7231:status:500"
+
+# Error codes by category
+ERROR_CODES: Final[dict[int, str]] = {
+    # Authentication errors (401)
+    status.HTTP_401_UNAUTHORIZED: "AUTH001",
+    # Authorization errors (403)
+    status.HTTP_403_FORBIDDEN: "AUTH002",
+    # Resource errors (404)
+    status.HTTP_404_NOT_FOUND: "RESOURCE001",
+    # Validation errors (400, 422)
+    status.HTTP_400_BAD_REQUEST: "VALIDATION001",
+    status.HTTP_422_UNPROCESSABLE_ENTITY: "VALIDATION002",
+    # Rate limit errors (429)
+    status.HTTP_429_TOO_MANY_REQUESTS: "RATE001",
+    # Server errors (500, 503)
+    status.HTTP_500_INTERNAL_SERVER_ERROR: "SERVER001",
+    status.HTTP_503_SERVICE_UNAVAILABLE: "SERVER002",
+}
+
+# Error type mapping
+ERROR_TYPES: Final[dict[str, str]] = {
+    "AUTH": AUTH_ERROR_TYPE,
+    "RESOURCE": RESOURCE_ERROR_TYPE,
+    "VALIDATION": VALIDATION_ERROR_TYPE,
+    "RATE": RATE_LIMIT_ERROR_TYPE,
+    "SERVER": SERVER_ERROR_TYPE,
+}
 
 # Content type for responses
 JSON_CONTENT_TYPE: Final[str] = "application/problem+json"
@@ -139,11 +170,17 @@ class ProblemDetail(BaseModel):
     Example:
         ```python
         error = ProblemDetail(
-            type="https://errors.api.com/not-found",
-            title="Resource Not Found",
-            status=404,
-            detail="User with ID 123 not found",
-            instance="/api/v1/users/123"
+            type="urn:ietf:params:rfc:7807:validation",
+            title="Validation Error",
+            status=400,
+            detail="Email format is invalid",
+            instance="/api/v1/users",
+            code="VALIDATION001",
+            errors=[{
+                "loc": ["email"],
+                "msg": "Invalid email format",
+                "type": "pattern_mismatch"
+            }]
         )
         ```
     """
@@ -151,26 +188,25 @@ class ProblemDetail(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "type": "https://errors.api.com/validation-error",
+                "type": "urn:ietf:params:rfc:7807:validation",
                 "title": "Validation Error",
                 "status": 400,
                 "detail": "Email format is invalid",
                 "instance": "/api/v1/users",
-                "errors": [
-                    {
-                        "loc": ["email"],
-                        "msg": "Invalid email format",
-                        "type": "pattern_mismatch"
-                    }
-                ]
+                "code": "VALIDATION001",
+                "errors": [{
+                    "loc": ["email"],
+                    "msg": "Invalid email format",
+                    "type": "pattern_mismatch"
+                }]
             }
         }
     )
 
     type: str = Field(
         default=DEFAULT_ERROR_TYPE,
-        description="URI reference identifying the problem type",
-        examples=["https://errors.api.com/validation-error"],
+        description="A URI reference [RFC3986] that identifies the problem type",
+        examples=["urn:ietf:params:rfc:7807:validation"],
         max_length=255,
     )
     title: str = Field(
@@ -194,6 +230,12 @@ class ProblemDetail(BaseModel):
         description="URI reference for the specific occurrence",
         examples=["/api/v1/users"],
         max_length=255,
+    )
+    code: str | None = Field(
+        default=None,
+        description="Machine-readable error code",
+        examples=["VALIDATION001"],
+        max_length=20,
     )
     errors: list[dict[str, Any]] | None = Field(
         default=None,
@@ -231,12 +273,21 @@ async def http_error_handler(
         - Security headers
         - Content type
     """
+    # Get error code and type
+    error_code = ERROR_CODES.get(exc.status_code)
+    error_type = DEFAULT_ERROR_TYPE
+    if error_code:
+        prefix = error_code[:error_code.find("0")]
+        error_type = ERROR_TYPES.get(prefix, DEFAULT_ERROR_TYPE)
+
+    # Create problem detail
     problem = ProblemDetail(
-        type=DEFAULT_ERROR_TYPE,
+        type=error_type,
         title=HTTP_STATUS_TITLES.get(exc.status_code, HTTPStatus(exc.status_code).phrase),
         status=exc.status_code,
         detail=str(exc.detail),
         instance=str(request.url),
+        code=error_code,
     )
 
     headers = {
@@ -284,6 +335,7 @@ async def validation_error_handler(
         status=status.HTTP_422_UNPROCESSABLE_ENTITY,
         detail="Request parameters failed validation",
         instance=str(request.url),
+        code=ERROR_CODES[status.HTTP_422_UNPROCESSABLE_ENTITY],
         errors=cast(list[dict[str, Any]], exc.errors()),
     )
 

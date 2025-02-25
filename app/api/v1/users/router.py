@@ -54,14 +54,13 @@ from secrets import token_hex
 
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.dependencies import CurrentUser, DBSession
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.models import AuditLog, User
 from app.schemas import EmailRequest, UserCreate, UserResponse, UserUpdate
-from app.services.email import email_service
+from app.services.email import EmailError, email_service
 from app.utils.request import get_client_ip
 
 # Configure module logger
@@ -103,13 +102,18 @@ async def register(
         HTTPException: 400: Email/phone exists
     """
     try:
-        # Check uniqueness
-        stmt = select(User).where(
-            (User.email == user_in.email.lower()) | (User.phone == user_in.phone)
-        )
+        # Check email uniqueness
+        stmt = select(User).where(User.email == user_in.email.lower())
         result = await db.execute(stmt)
         existing = result.scalar_one_or_none()
-        assert not existing, "Email or phone already registered"
+        assert not existing, "Email already registered"
+
+        # Check phone uniqueness if provided
+        if user_in.phone:
+            stmt = select(User).where(User.phone == user_in.phone)
+            result = await db.execute(stmt)
+            existing = result.scalar_one_or_none()
+            assert not existing, "Phone number already registered"
 
         # Create verification token
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
@@ -161,15 +165,10 @@ async def register(
         return user
 
     except AssertionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-    except IntegrityError as e:
         logger.error("Registration failed: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Email or phone number already registered",
+            detail=str(e),
         )
 
 
@@ -548,6 +547,7 @@ async def request_email_change(
         HTTPException:
             - 400: Invalid email or already in use
             - 409: Email already registered
+            - 500: Email service error
     """
     # Check if email is different
     new_email = email_in.email.lower()
@@ -595,20 +595,22 @@ async def request_email_change(
             to_email=new_email,
             verification_code=verification_code,
         )
-    except Exception as e:
-        logger.error("Failed to send verification email: %s", str(e))
+    except EmailError as e:
+        logger.error("Email change request failed: %s", e.detail)
+        # Log the error
         audit_log = AuditLog(
             user_id=current_user.id,
             action="send_verification_email",
             ip_address=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
-            details=f"Failed to send verification email: {str(e)}",
+            details=f"Failed to send verification email: {e.detail}",
         )
         db.add(audit_log)
         await db.commit()
+        # Return a user-friendly error
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email",
+            detail="Unable to send verification email. Please try again later.",
         )
 
     return {"message": "Verification email sent to new address"}
