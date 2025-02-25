@@ -102,13 +102,18 @@ async def register(
         HTTPException: 400: Email/phone exists
     """
     try:
-        # Check uniqueness
-        stmt = select(User).where(
-            (User.email == user_in.email.lower()) | (User.phone == user_in.phone)
-        )
+        # Check email uniqueness
+        stmt = select(User).where(User.email == user_in.email.lower())
         result = await db.execute(stmt)
         existing = result.scalar_one_or_none()
-        assert not existing, "Email or phone already registered"
+        assert not existing, "Email already registered"
+
+        # Check phone uniqueness if provided
+        if user_in.phone:
+            stmt = select(User).where(User.phone == user_in.phone)
+            result = await db.execute(stmt)
+            existing = result.scalar_one_or_none()
+            assert not existing, "Phone number already registered"
 
         # Create verification token
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
