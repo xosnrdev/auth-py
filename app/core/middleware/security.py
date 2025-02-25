@@ -53,6 +53,23 @@ XSS_PROTECTION: Final[str] = "1; mode=block"
 CONTENT_TYPE_OPTIONS: Final[str] = "nosniff"
 FRAME_OPTIONS: Final[str] = "DENY"
 
+# Content Security Policy
+CSP_POLICY: Final[str] = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "  # Required for API docs
+    "style-src 'self' 'unsafe-inline'; "  # Required for API docs
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "frame-src 'none'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'; "
+    "upgrade-insecure-requests; "
+    "block-all-mixed-content"
+)
+
 # Restricted browser features
 PERMISSIONS_POLICY: Final[str] = (
     "accelerometer=(), "
@@ -121,6 +138,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Strict-Transport-Security": HSTS_POLICY,
 
             # XSS prevention
+            "Content-Security-Policy": CSP_POLICY,
             "X-Content-Type-Options": CONTENT_TYPE_OPTIONS,
             "X-XSS-Protection": XSS_PROTECTION,
 
