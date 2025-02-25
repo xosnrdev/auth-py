@@ -24,7 +24,7 @@ response = AuditLogResponse(
 Critical Notes:
 - All timestamps in UTC
 - IP addresses: IPv4 or IPv6 format
-- Actions limited to predefined set
+- Actions limited to 50 chars
 - User agents truncated to 512 chars
 - Details field optional, max 1024 chars
 """
@@ -43,18 +43,6 @@ MAX_ACTION_LENGTH: Final[int] = 50
 MAX_IP_LENGTH: Final[int] = 45
 MAX_USER_AGENT_LENGTH: Final[int] = 512
 MAX_DETAILS_LENGTH: Final[int] = 1024
-
-# Valid actions
-AUDIT_ACTIONS: Final[tuple[str, ...]] = (
-    "login",
-    "logout",
-    "password_reset",
-    "email_change",
-    "mfa_enable",
-    "mfa_disable",
-    "account_lock",
-    "account_unlock",
-)
 
 # Patterns
 IPV4_PATTERN: Final[str] = r"^(?:\d{1,3}\.){3}\d{1,3}$"
@@ -83,13 +71,6 @@ class AuditLogBase(BaseModel):
         max_length=MAX_DETAILS_LENGTH,
         examples=["2FA verification successful"],
     )
-
-    @field_validator("action")
-    @classmethod
-    def validate_action(cls, v: str) -> str:
-        """Ensure action is from allowed set."""
-        assert v in AUDIT_ACTIONS, f"Invalid action. Must be one of: {', '.join(AUDIT_ACTIONS)}"
-        return v
 
     @field_validator("ip_address")
     @classmethod

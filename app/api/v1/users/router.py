@@ -99,7 +99,7 @@ async def register(
         User: Created user object
 
     Raises:
-        HTTPException: 400: Email/phone exists
+        HTTPException: 409: Email/phone exists
     """
     try:
         # Check email uniqueness
@@ -378,7 +378,7 @@ async def resend_verification(
 
     Raises:
         HTTPException:
-            - 400: Already verified
+            - 409: Already verified
     """
     try:
         # Validate state
@@ -431,7 +431,7 @@ async def resend_verification(
 
     except AssertionError as e:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
         )
 
