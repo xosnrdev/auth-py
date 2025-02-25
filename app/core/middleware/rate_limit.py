@@ -239,7 +239,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if current_count > max_requests:
             retry_after = window_seconds - now.second
             problem = ProblemDetail(
-                type="https://tools.ietf.org/html/rfc6585#section-4",
+                type="urn:ietf:params:rfc:6585:status:429",
                 title="Too Many Requests",
                 status=429,
                 detail=(
@@ -248,6 +248,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     f"Limit is {max_requests} requests per {window_seconds} seconds."
                 ),
                 instance=str(request.url),
+                code="RATE001",
             )
             headers["Retry-After"] = str(retry_after)
             return JSONResponse(
