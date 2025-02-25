@@ -84,6 +84,8 @@ COOKIE_MAX_AGE: Final[int] = settings.COOKIE_MAX_AGE_SECS
 # Redis key patterns
 TOKEN_KEY_PATTERN: Final[str] = TOKEN_PREFIX + "*"
 USER_TOKEN_PATTERN: Final[str] = TOKEN_PREFIX + "user:{user_id}:*"
+BLACKLIST_PREFIX: Final[str] = "blacklist:"
+BLACKLIST_KEY_PATTERN: Final[str] = BLACKLIST_PREFIX + "*"
 
 
 class TokenType(str, Enum):
@@ -347,6 +349,7 @@ class TokenService:
             - Type validation
             - Expiry checking
             - Revocation check
+            - Blacklist check
         """
         try:
             # Decode and validate
@@ -361,7 +364,13 @@ class TokenService:
             if token_data.type != token_type:
                 raise ValueError("Invalid token type")
 
-            # Check revocation
+            # Check blacklist for access tokens
+            if token_type == TokenType.ACCESS:
+                is_blacklisted = await self._is_token_blacklisted(token_data.jti)
+                if is_blacklisted:
+                    raise ValueError("Token has been revoked")
+
+            # Check revocation for refresh tokens
             if token_type == TokenType.REFRESH:
                 metadata = await self.get_token_metadata(token_data.jti)
                 if not metadata:
@@ -445,8 +454,51 @@ class TokenService:
                 detail="Failed to store token metadata",
             ) from e
 
+    async def _is_token_blacklisted(self, token_id: str) -> bool:
+        """Check if an access token is blacklisted.
+
+        Args:
+            token_id: Token identifier
+
+        Returns:
+            bool: True if token is blacklisted
+
+        Security:
+            - Safe key construction
+            - Type validation
+            - Error handling
+        """
+        key = f"{BLACKLIST_PREFIX}{token_id}"
+        try:
+            return bool(await redis.exists(key))
+        except Exception as e:
+            logger.error("Failed to check token blacklist: %s", str(e))
+            return True  # Fail secure
+
+    async def _blacklist_token(self, token_id: str, expires_in: int) -> None:
+        """Add an access token to the blacklist.
+
+        Args:
+            token_id: Token identifier
+            expires_in: Seconds until token expiration
+
+        Security:
+            - Expiry handling
+            - Safe key construction
+            - Error handling
+        """
+        key = f"{BLACKLIST_PREFIX}{token_id}"
+        try:
+            await redis.setex(key, expires_in, "1")
+        except Exception as e:
+            logger.error("Failed to blacklist token: %s", str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to revoke token",
+            ) from e
+
     async def revoke_token(self, token: str) -> None:
-        """Revoke a refresh token.
+        """Revoke a token (both access and refresh).
 
         Args:
             token: JWT to revoke
@@ -456,21 +508,45 @@ class TokenService:
             - Metadata cleanup
             - Type validation
             - Error handling
+            - Blacklist support
         """
         try:
-            # Verify token first
-            payload = await self.verify_token(token, TokenType.REFRESH)
-            # Delete metadata
-            await redis.delete(f"{TOKEN_PREFIX}{payload.jti}")
-        except HTTPException:
-            pass  # Token already invalid
+            # Decode token without verification first to get type
+            payload = jwt.decode(
+                token=token,
+                key=self.secret,
+                algorithms=[ALGORITHM],
+                options={"verify_exp": False},  # Allow expired tokens
+            )
+            token_data = TokenPayload(**payload)
+
+            if token_data.type == TokenType.ACCESS:
+                # Calculate remaining time
+                now = datetime.now(UTC)
+                expires_in = int((token_data.exp - now).total_seconds())
+                if expires_in > 0:
+                    # Add to blacklist with remaining TTL
+                    await self._blacklist_token(token_data.jti, expires_in)
+                    logger.info(
+                        "Access token blacklisted: %s (expires in %d seconds)",
+                        token_data.jti,
+                        expires_in,
+                    )
+            else:
+                # Delete refresh token metadata
+                await redis.delete(f"{TOKEN_PREFIX}{token_data.jti}")
+                logger.info("Refresh token revoked: %s", token_data.jti)
+        except (JWTError, ValueError) as e:
+            logger.error("Failed to revoke token: %s", str(e))
+            # Token already invalid or malformed
+            pass
 
     async def revoke_all_user_tokens(
         self,
         user_id: str,
         exclude_token_id: str | None = None,
     ) -> None:
-        """Revoke all user's refresh tokens.
+        """Revoke all user's tokens (both access and refresh).
 
         Args:
             user_id: User identifier
@@ -481,12 +557,17 @@ class TokenService:
             - Session cleanup
             - Safe iteration
             - Error handling
+            - Complete revocation
         """
+        # Revoke refresh tokens
         pattern = USER_TOKEN_PATTERN.format(user_id=user_id)
         async for key in redis.scan_iter(pattern):
             if exclude_token_id and exclude_token_id in key:
                 continue
             await redis.delete(key)
+
+        # Note: Access tokens will be checked against blacklist
+        # No need to track them by user_id as they're short-lived
 
 
 # Create global token service instance

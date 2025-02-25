@@ -241,32 +241,43 @@ async def logout(
     request: Request,
     response: Response,
     current_user: CurrentUser,
+    _: Token,  # Required by FastAPI for token validation
     db: DBSession,
 ) -> None:
     """Logout user and revoke current session following RFC 7009.
 
     Implements Token Revocation (RFC 7009):
     1. Identifies current session from access token
-    2. Revokes associated refresh token
-    3. Clears session cookies if present
-    4. Logs logout action
+    2. Revokes access token
+    3. Revokes associated refresh token
+    4. Clears session cookies if present
+    5. Logs logout action
 
     Args:
         request: FastAPI request object
         response: FastAPI response object for cookie management
         current_user: Authenticated user from token
+        token: Raw access token from request
         db: Database session
 
     Raises:
         HTTPException: If token revocation fails
 
     Security:
+        - Revokes access token
         - Revokes refresh tokens
         - Clears secure cookies
         - Logs all logout attempts
         - Handles both web and API clients
     """
     try:
+        # Get raw token from auth header
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            access_token = auth_header[7:]
+            # Revoke access token
+            await token_service.revoke_token(access_token)
+
         # Revoke all refresh tokens for user
         await token_service.revoke_all_user_tokens(current_user.id.hex)
 

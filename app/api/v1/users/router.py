@@ -54,7 +54,6 @@ from secrets import token_hex
 
 from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 
 from app.api.v1.dependencies import CurrentUser, DBSession
 from app.core.config import settings
@@ -161,15 +160,10 @@ async def register(
         return user
 
     except AssertionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-    except IntegrityError as e:
         logger.error("Registration failed: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Email or phone number already registered",
+            detail=str(e),
         )
 
 
