@@ -72,45 +72,50 @@ DEFAULT_RATE_LIMIT: Final[RateLimit] = RateLimit(
     window=settings.RATE_LIMIT_WINDOW_SECS,
 )
 
+# Security level rate limits
+HIGH_SECURITY_LIMIT: Final[RateLimit] = RateLimit(
+    requests=5,    # 5 requests per 5 minutes
+    window=300,    # Strict limit for sensitive operations
+)
+
+MEDIUM_SECURITY_LIMIT: Final[RateLimit] = RateLimit(
+    requests=10,   # 10 requests per minute
+    window=60,     # Balanced for normal operations
+)
+
+LOW_SECURITY_LIMIT: Final[RateLimit] = RateLimit(
+    requests=30,   # 30 requests per minute
+    window=60,     # Relaxed for read operations
+)
+
 # Define rate limits for specific endpoints
 ENDPOINT_RATE_LIMITS: Final[dict[str, RateLimit]] = {
-    # Auth endpoints (login attempts, registration spam)
-    "/api/v1/auth/login": RateLimit(
-        requests=5,   # 5 requests per 5 minutes
-        window=300,   # Prevent brute force
-    ),
-    "/api/v1/auth/register": RateLimit(
-        requests=3,   # 3 requests per hour
-        window=3600,  # Prevent mass account creation
-    ),
-    "/api/v1/auth/verify-email/resend": RateLimit(
-        requests=3,   # 3 requests per hour
-        window=3600,  # Prevent email spam
-    ),
-    "/api/v1/auth/refresh": RateLimit(
-        requests=10,  # 10 requests per 10 minutes
-        window=600,   # Prevent token abuse
-    ),
+    # High security endpoints (auth, account changes)
+    "/api/v1/auth/login": HIGH_SECURITY_LIMIT,
+    "/api/v1/auth/register": HIGH_SECURITY_LIMIT,
+    "/api/v1/auth/password-reset/request": HIGH_SECURITY_LIMIT,
+    "/api/v1/auth/password-reset/verify": HIGH_SECURITY_LIMIT,
+    "/api/v1/users/me/email": HIGH_SECURITY_LIMIT,
+    "/api/v1/users/me/email/verify": HIGH_SECURITY_LIMIT,
 
-    # User management (profile, sessions)
-    "/api/v1/auth/me": RateLimit(
-        requests=60,  # 60 requests per minute
-        window=60,    # Normal API usage
-    ),
-    "/api/v1/auth/me/sessions": RateLimit(
-        requests=30,  # 30 requests per minute
-        window=60,    # Session management
-    ),
+    # Medium security endpoints (profile, verification)
+    "/api/v1/auth/refresh": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/auth/introspect": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/auth/social/providers": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/users/verify-email": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/users/verify-email/resend": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/users/me": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/auth/social/*/authorize": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/auth/social/*/callback": MEDIUM_SECURITY_LIMIT,
 
-    # Social auth (OAuth flows)
-    "/api/v1/auth/social/*/authorize": RateLimit(
-        requests=10,  # 10 requests per 5 minutes
-        window=300,   # Prevent OAuth abuse
-    ),
-    "/api/v1/auth/social/*/callback": RateLimit(
-        requests=10,  # 10 requests per 5 minutes
-        window=300,   # Prevent callback spam
-    ),
+    # Low security endpoints (read operations)
+    "/health": LOW_SECURITY_LIMIT,
+
+    # Admin endpoints (medium security with RBAC)
+    "/api/v1/admin/users": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/admin/users/*": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/admin/audit/logs": MEDIUM_SECURITY_LIMIT,
+    "/api/v1/admin/audit/logs/*": MEDIUM_SECURITY_LIMIT,
 }
 
 # Static paths to exclude
