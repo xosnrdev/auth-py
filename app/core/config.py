@@ -56,8 +56,8 @@ class Settings(BaseSettings):
         pattern=r"^\d+\.\d+\.\d+$",
     )
     PROJECT_DESCRIPTION: str = Field(
-        default="Authentication Service API",
-        description="Proof of concept (PoC) for a modern authentication service built with FastAPI.",
+        default="A proof of concept authentication service built with FastAPI.",
+        description="Project description for API docs and metadata",
         min_length=1,
         max_length=1000,
     )

@@ -32,7 +32,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Copy project files
 COPY ./app /app/app
-COPY alembic.ini /app/
 
 # Sync the project
 RUN --mount=type=cache,target=/root/.cache/uv \
