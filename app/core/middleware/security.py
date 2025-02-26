@@ -19,11 +19,11 @@ FRAME_OPTIONS: Final[str] = "DENY"
 
 CSP_POLICY: Final[str] = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-    "style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' data:; "
-    "font-src 'self'; "
-    "connect-src 'self'; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "img-src 'self' data: https://validator.swagger.io https://fastapi.tiangolo.com; "
+    "font-src 'self' data: https://unpkg.com; "
+    "connect-src 'self' https://unpkg.com; "
     "frame-src 'none'; "
     "object-src 'none'; "
     "base-uri 'self'; "
@@ -82,7 +82,6 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
             # API restrictions
             "Permissions-Policy": PERMISSIONS_POLICY,
-            "Feature-Policy": FEATURE_POLICY,
         }
 
         response.headers.update(headers)
