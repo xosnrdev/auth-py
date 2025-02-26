@@ -10,6 +10,7 @@ coverage.xml
 .mypy_cache
 .pytest_cache
 .ruff_cache
+alembic/versions/
 
 # Virtual environments
 .venv
