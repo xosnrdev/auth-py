@@ -4,13 +4,13 @@ import logging
 from enum import Enum
 from typing import cast
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Request, Response
 from sqlalchemy import func, select
 
 from app.api.v1.dependencies import DBSession
 from app.core.auth import requires_admin
 from app.core.jwt import TokenResponse, token_service
-from app.core.oauth2 import OAuthUserInfo, oauth, require_user_info
+from app.core.oauth2 import AppleOAuthUserInfo, OAuthUserInfo, oauth
 from app.models import User
 from app.utils.request import get_client_ip
 
@@ -92,7 +92,7 @@ async def apple_login(request: Request) -> Response:
 async def oauth_callback_apple(
     request: Request,
     db: DBSession,
-    user_info: OAuthUserInfo = Depends(lambda r: require_user_info(r, 'apple')),
+    user_info: AppleOAuthUserInfo,
 ) -> TokenResponse:
     """Handle Apple OAuth2 callback."""
     # Find or create user

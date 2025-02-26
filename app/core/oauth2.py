@@ -81,3 +81,9 @@ async def require_user_info(
         )
 
 OAuthUserInfo = Annotated[UserInfo, Depends(require_user_info)]
+
+async def require_apple_user_info(request: Request) -> UserInfo:
+    """Get validated user info from Apple OAuth provider."""
+    return await require_user_info(request, provider='apple')
+
+AppleOAuthUserInfo = Annotated[UserInfo, Depends(require_apple_user_info)]
