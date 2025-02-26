@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:17.3-alpine3.21
+    container_name: postgres
     restart: always
     ports:
       - ${POSTGRES_PORT}:${POSTGRES_PORT}
@@ -13,6 +14,7 @@ services:
 
   redis:
     image: redis:7.4.2-alpine3.21
+    container_name: redis
     restart: always
     ports:
       - ${REDIS_PORT}:${REDIS_PORT}
