@@ -69,13 +69,15 @@ def custom_openapi() -> dict[str, Any]:
     )
 
     openapi_schema["components"]["securitySchemes"] = {
-        "HTTPBearer": {
+        "Bearer": {
             "type": OPENAPI_AUTH_TYPE,
             "scheme": OPENAPI_AUTH_SCHEME,
             "bearerFormat": OPENAPI_BEARER_FORMAT,
             "description": "JWT token from login or social auth",
         }
     }
+
+    openapi_schema["security"] = [{"Bearer": []}]
 
     openapi_schema["components"]["examples"] = {
         "TokenResponse": {

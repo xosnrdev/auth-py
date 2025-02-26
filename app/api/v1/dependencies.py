@@ -20,7 +20,7 @@ MAX_TOKEN_LENGTH: Final[int] = 1024
 AUTH_SCHEME: Final[str] = "Bearer"
 
 DBSession = Annotated[AsyncSession, Depends(get_db)]
-Token = Annotated[str, Depends(HTTPBearer())]
+Token = Annotated[str, Depends(HTTPBearer(scheme_name=AUTH_SCHEME))]
 
 bearer_scheme = HTTPBearer(
     auto_error=True,
