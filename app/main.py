@@ -7,7 +7,11 @@ from typing import Any, Final
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.docs import (
+    get_redoc_html,
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
 from fastapi.openapi.utils import get_openapi
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -32,6 +36,8 @@ HEALTH_STATUS_ERROR: Final[str] = "error"
 OPENAPI_BEARER_FORMAT: Final[str] = "JWT"
 OPENAPI_AUTH_SCHEME: Final[str] = "bearer"
 OPENAPI_AUTH_TYPE: Final[str] = "http"
+
+SWAGGER_OAUTH2_REDIRECT_URL: Final[str] = "/docs/oauth2-redirect"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
@@ -121,17 +127,42 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
+    swagger_ui_oauth2_redirect_url=SWAGGER_OAUTH2_REDIRECT_URL,
 )
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html() -> Response:
     """Secure Swagger UI implementation."""
     return get_swagger_ui_html(
-        openapi_url="/openapi.json",
-        title=app.title,
-        oauth2_redirect_url="/docs/oauth2-redirect",
-        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
-        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
+        openapi_url="/api/openapi.json",
+        title=f"{app.title} - Swagger UI",
+        oauth2_redirect_url=SWAGGER_OAUTH2_REDIRECT_URL,
+        swagger_js_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js",
+        swagger_css_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css",
+    )
+
+@app.get(SWAGGER_OAUTH2_REDIRECT_URL, include_in_schema=False)
+async def swagger_ui_redirect(request: Request) -> Response:
+    """OAuth2 redirect for Swagger UI.
+
+    This endpoint should only be accessed as part of the OAuth2 flow from Swagger UI.
+    Direct access will be redirected to the documentation page.
+    """
+    # Check if this is part of OAuth2 flow by looking for required parameters
+    if not any(param in request.query_params for param in ['code', 'error', 'state']):
+        # If accessed directly, redirect to docs
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url='/docs')
+
+    return get_swagger_ui_oauth2_redirect_html()
+
+@app.get("/redoc", include_in_schema=False)
+async def redoc_html() -> Response:
+    """ReDoc UI implementation."""
+    return get_redoc_html(
+        openapi_url="/api/openapi.json",
+        title=f"{app.title} - ReDoc",
+        redoc_js_url="https://unpkg.com/redoc@next/bundles/redoc.standalone.js",
     )
 
 app.openapi = custom_openapi  # type: ignore
@@ -161,6 +192,11 @@ app.add_middleware(RateLimitMiddleware)
 setup_cors(app)
 
 app.include_router(api_v1_router, prefix="/api")
+
+@app.get("/api/openapi.json", include_in_schema=False)
+async def get_openapi_json() -> dict[str, Any]:
+    """Get OpenAPI schema."""
+    return custom_openapi()
 
 @app.get("/health")
 async def health_check() -> dict[str, str | dict[str, str]]:
