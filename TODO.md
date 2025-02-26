@@ -27,7 +27,7 @@
 
 ### Rate Limiting
 - [ ] Write rate limiting tests
-- [ ] Add configurable rate limit rules
+- [x] Add configurable rate limit rules
 - [ ] Implement rate limit monitoring
 - [ ] Add rate limit bypass for admin routes
 
