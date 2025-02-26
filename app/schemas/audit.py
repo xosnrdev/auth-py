@@ -1,33 +1,4 @@
-"""Security audit log schemas for tracking user actions.
-
-Example:
-```python
-# Create audit log entry
-log = AuditLogCreate(
-    action="login",                # Limited to 50 chars
-    ip_address="192.168.1.1",     # IPv4 or IPv6
-    user_agent="Mozilla/5.0...",   # Browser info
-    details="2FA successful",      # Optional context
-    user_id="123e4567-..."        # User who acted
-)
-
-# Response includes timestamps
-response = AuditLogResponse(
-    **log.model_dump(),
-    id="987fcdeb-...",
-    created_at="2025-02-23T10:20:30Z",
-    updated_at="2025-02-23T10:20:30Z",
-    timestamp="2025-02-23T10:20:30Z"
-)
-```
-
-Critical Notes:
-- All timestamps in UTC
-- IP addresses: IPv4 or IPv6 format
-- Actions limited to 50 chars
-- User agents truncated to 512 chars
-- Details field optional, max 1024 chars
-"""
+"""Security audit log schemas for tracking user actions."""
 
 import re
 from datetime import UTC, datetime
@@ -38,13 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.base import BaseSchema
 
-# Constants
 MAX_ACTION_LENGTH: Final[int] = 50
 MAX_IP_LENGTH: Final[int] = 45
 MAX_USER_AGENT_LENGTH: Final[int] = 512
 MAX_DETAILS_LENGTH: Final[int] = 1024
 
-# Patterns
 IPV4_PATTERN: Final[str] = r"^(?:\d{1,3}\.){3}\d{1,3}$"
 IPV6_PATTERN: Final[str] = r"^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$"
 

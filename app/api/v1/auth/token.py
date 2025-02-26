@@ -1,11 +1,4 @@
-"""Authentication endpoints for login, logout, token management, and password reset.
-
-This module implements RFC-compliant authentication flows including:
-- Email/password authentication (RFC 6749)
-- Token refresh (RFC 6749 Section 6)
-- Token revocation (RFC 7009)
-- Password reset with secure token
-"""
+"""Authentication endpoints for login, logout, token management, and password reset."""
 
 import logging
 from datetime import UTC, datetime, timedelta
@@ -34,43 +27,15 @@ router = APIRouter(tags=["auth"])
 @router.post("/login", response_model=TokenResponse)
 async def login(
     request: Request,
-    _: Response,  # Not used but required by FastAPI
+    _: Response,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: DBSession,
 ) -> TokenResponse:
-    """Authenticate user with email/password following OAuth2 password grant.
-
-    Implements OAuth2 Resource Owner Password Credentials Grant (RFC 6749 Section 4.3):
-    1. Validates email/password credentials
-    2. Verifies account status (active and verified)
-    3. Issues access and refresh tokens
-    4. Logs successful login attempt
-
-    Args:
-        request: FastAPI request object
-        _: Response object (unused but required by FastAPI)
-        form_data: OAuth2 password grant credentials
-        db: Database session
-
-    Returns:
-        TokenResponse: Access and refresh tokens with metadata
-
-    Raises:
-        HTTPException: If credentials invalid, account inactive, or email unverified
-
-    Security:
-        - Uses secure password hashing
-        - Implements account status checks
-        - Returns standardized OAuth2 response
-        - Rate limited by default middleware
-        - Logs all attempts for audit
-    """
-    # Find user by email
+    """Authenticate user with email/password following OAuth2 password grant."""
     stmt = select(User).where(User.email == form_data.username.lower())
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
-    # Verify credentials
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -78,7 +43,6 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Check if user is active and verified
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -92,15 +56,13 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Create tokens with metadata
     tokens = await token_service.create_tokens(
         user_id=user.id,
         user_agent=request.headers.get("user-agent", ""),
         ip_address=get_client_ip(request),
-        response=None,  # Don't set cookies, return tokens in body
+        response=None,
     )
 
-    # Log login
     audit_log = AuditLog(
         user_id=user.id,
         action="login",
@@ -111,7 +73,6 @@ async def login(
     db.add(audit_log)
     await db.commit()
 
-    # Return tokens
     return TokenResponse(
         access_token=cast(dict[str, str], tokens)["access_token"],
         refresh_token=cast(dict[str, str], tokens)["refresh_token"],
@@ -126,38 +87,7 @@ async def refresh_token(
     response: Response,
     db: DBSession,
 ) -> TokenResponse:
-    """Refresh access token using refresh token following OAuth2 refresh grant.
-
-    Implements OAuth2 Refresh Token Grant (RFC 6749 Section 6):
-    1. Validates refresh token from cookie or body
-    2. Verifies token and user status
-    3. Issues new access and refresh tokens
-    4. Revokes old refresh token
-    5. Logs token refresh
-
-    Supports dual token delivery methods:
-    - Web clients: Refresh token in HTTP-only cookie, access token in body
-    - API clients: Both tokens in JSON response body
-
-    Args:
-        request: FastAPI request object
-        response: FastAPI response object for cookie management
-        db: Database session
-
-    Returns:
-        TokenResponse: New access token (and refresh token for API clients)
-
-    Raises:
-        HTTPException: If refresh token invalid, expired, or user inactive
-
-    Security:
-        - Implements token rotation
-        - Validates token authenticity
-        - Supports secure cookie-based tokens
-        - Revokes compromised tokens
-        - Logs all refresh attempts
-    """
-    # Get refresh token from cookie or body
+    """Refresh access token using refresh token following OAuth2 refresh grant."""
     token = None
     body_data = await request.json() if request.headers.get("content-type") == "application/json" else {}
     if isinstance(body_data, dict):
@@ -172,15 +102,12 @@ async def refresh_token(
         )
 
     try:
-        # Verify refresh token
         token_data = await token_service.verify_token(token, TokenType.REFRESH)
 
-        # Get user from database
         stmt = select(User).where(User.id == token_data.sub)
         result = await db.execute(stmt)
         user = result.scalar_one_or_none()
         if not user or not user.is_active:
-            # Revoke invalid token
             await token_service.revoke_token(token)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -188,19 +115,16 @@ async def refresh_token(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Create new tokens
         is_api_client = "application/json" in request.headers.get("content-type", "")
         tokens = await token_service.create_tokens(
             user_id=user.id,
             user_agent=request.headers.get("user-agent", ""),
             ip_address=get_client_ip(request),
-            response=None if is_api_client else response,  # Cookie for web clients
+            response=None if is_api_client else response
         )
 
-        # Revoke old token
         await token_service.revoke_token(token)
 
-        # Log token refresh
         audit_log = AuditLog(
             user_id=user.id,
             action="refresh_token",
@@ -211,7 +135,6 @@ async def refresh_token(
         db.add(audit_log)
         await db.commit()
 
-        # Return tokens based on client type
         if is_api_client:
             return TokenResponse(
                 access_token=cast(dict[str, str], tokens)["access_token"],
@@ -222,7 +145,7 @@ async def refresh_token(
         else:
             return TokenResponse(
                 access_token=cast(dict[str, str], tokens)["access_token"],
-                refresh_token=None,  # Web clients use cookies
+                refresh_token=None,
                 token_type="bearer",
                 expires_in=settings.JWT_ACCESS_TOKEN_EXPIRES_SECS,
             )
@@ -241,47 +164,18 @@ async def logout(
     request: Request,
     response: Response,
     current_user: CurrentUser,
-    _: Token,  # Required by FastAPI for token validation
+    _: Token,
     db: DBSession,
 ) -> None:
-    """Logout user and revoke current session following RFC 7009.
-
-    Implements Token Revocation (RFC 7009):
-    1. Identifies current session from access token
-    2. Revokes access token
-    3. Revokes associated refresh token
-    4. Clears session cookies if present
-    5. Logs logout action
-
-    Args:
-        request: FastAPI request object
-        response: FastAPI response object for cookie management
-        current_user: Authenticated user from token
-        token: Raw access token from request
-        db: Database session
-
-    Raises:
-        HTTPException: If token revocation fails
-
-    Security:
-        - Revokes access token
-        - Revokes refresh tokens
-        - Clears secure cookies
-        - Logs all logout attempts
-        - Handles both web and API clients
-    """
+    """Logout user and revoke current session following RFC 7009."""
     try:
-        # Get raw token from auth header
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             access_token = auth_header[7:]
-            # Revoke access token
             await token_service.revoke_token(access_token)
 
-        # Revoke all refresh tokens for user
         await token_service.revoke_all_user_tokens(current_user.id.hex)
 
-        # Log logout
         audit_log = AuditLog(
             user_id=current_user.id,
             action="logout",
@@ -292,7 +186,6 @@ async def logout(
         db.add(audit_log)
         await db.commit()
 
-        # Clear refresh token cookie for web clients
         response.delete_cookie(key="refresh_token")
 
     except Exception as e:
@@ -310,35 +203,10 @@ async def logout_all(
     current_user: CurrentUser,
     db: DBSession,
 ) -> None:
-    """Logout from all devices and revoke all user sessions.
-
-    Implements comprehensive session termination:
-    1. Revokes all refresh tokens for the user
-    2. Clears current session cookies
-    3. Logs multi-session logout
-    4. Terminates all active sessions
-
-    Args:
-        request: FastAPI request object
-        response: FastAPI response object for cookie management
-        current_user: Authenticated user from token
-        db: Database session
-
-    Raises:
-        HTTPException: If token revocation fails
-
-    Security:
-        - Complete session termination
-        - Revokes all refresh tokens
-        - Clears secure cookies
-        - Logs multi-device logout
-        - Handles both web and API clients
-    """
+    """Logout from all devices and revoke all user sessions."""
     try:
-        # Revoke all refresh tokens for user
         await token_service.revoke_all_user_tokens(current_user.id.hex)
 
-        # Log logout from all devices
         audit_log = AuditLog(
             user_id=current_user.id,
             action="logout_all",
@@ -349,7 +217,6 @@ async def logout_all(
         db.add(audit_log)
         await db.commit()
 
-        # Clear refresh token cookie
         response.delete_cookie(key="refresh_token")
 
     except Exception as e:
@@ -362,28 +229,10 @@ async def logout_all(
 
 @router.get("/introspect", response_model=dict[str, str | list[str]])
 async def introspect_token(
-    _: Token,  # Required by FastAPI for token validation
+    _: Token,
     current_user: CurrentUser,
 ) -> dict[str, str | list[str]]:
-    """Introspect current access token following RFC 7662.
-
-    Implements Token Introspection (RFC 7662):
-    1. Validates current access token
-    2. Returns token metadata and claims
-    3. Includes user identity and roles
-
-    Args:
-        _: Token dependency for validation
-        current_user: Authenticated user from token
-
-    Returns:
-        dict: Token metadata including subject, email, and roles
-
-    Security:
-        - Requires valid access token
-        - Returns minimal necessary claims
-        - Supports role-based access control
-    """
+    """Introspect current access token following RFC 7662."""
     return {
         "sub": current_user.id.hex,
         "email": current_user.email,
@@ -397,52 +246,23 @@ async def request_password_reset(
     reset_request: PasswordResetRequest,
     db: DBSession,
 ) -> dict[str, str]:
-    """Request a password reset following security best practices.
-
-    Implements a secure password reset flow:
-    1. User requests reset with their email
-    2. System generates a secure random token
-    3. Token is stored in database with expiration
-    4. Reset link is sent to user's email
-    5. Success message returned (same response whether account exists or not)
-
-    Args:
-        request: FastAPI request object
-        reset_request: Password reset request containing email
-        db: Database session
-
-    Returns:
-        dict: Success message (intentionally vague to prevent email enumeration)
-
-    Security:
-        - Uses secure random token generation
-        - Implements token expiration
-        - Prevents email enumeration through consistent responses
-        - Rate limited by default middleware
-        - Logs all attempts for audit
-    """
-    # Find user by email
+    """Request a password reset"""
     stmt = select(User).where(User.email == reset_request.email.lower())
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
     if not user:
-        # Return success even if user doesn't exist to prevent email enumeration
         return {"message": "If the account exists, a password reset email has been sent"}
 
     if not user.is_active:
-        # Return success even if account is inactive to prevent email enumeration
         return {"message": "If the account exists, a password reset email has been sent"}
 
-    # Generate reset token
     reset_token = token_hex(settings.VERIFICATION_CODE_LENGTH)
     reset_expires = datetime.now(UTC) + timedelta(seconds=settings.VERIFICATION_CODE_EXPIRES_SECS)
 
-    # Update user
     user.reset_token = reset_token
     user.reset_token_expires_at = reset_expires
 
-    # Send reset email
     try:
         await email_service.send_password_reset_email(
             to_email=user.email,
@@ -450,7 +270,6 @@ async def request_password_reset(
         )
     except Exception as e:
         logger.error("Failed to send password reset email: %s", str(e))
-        # Log error but return success to prevent email enumeration
         error_log = AuditLog(
             user_id=user.id,
             action="password_reset_request",
@@ -462,7 +281,6 @@ async def request_password_reset(
         await db.commit()
         return {"message": "If the account exists, a password reset email has been sent"}
 
-    # Log action
     audit_log = AuditLog(
         user_id=user.id,
         action="password_reset_request",
@@ -482,34 +300,7 @@ async def verify_password_reset(
     reset_verify: PasswordResetVerify,
     db: DBSession,
 ) -> dict[str, str]:
-    """Verify password reset token and set new password.
-
-    Completes the password reset flow:
-    1. Validates the reset token
-    2. Checks token expiration
-    3. Updates password if valid
-    4. Revokes all existing sessions
-    5. Logs the password change
-
-    Args:
-        request: FastAPI request object
-        reset_verify: Reset verification containing token and new password
-        db: Database session
-
-    Returns:
-        dict: Success message
-
-    Raises:
-        HTTPException: If token is invalid or expired
-
-    Security:
-        - Validates token exists and not expired
-        - Requires active user account
-        - Enforces password requirements through schema validation
-        - Revokes all existing sessions for security
-        - Logs password change for audit
-    """
-    # Find user by reset token
+    """Verify password reset token and set new password."""
     stmt = select(User).where(
         User.reset_token == reset_verify.token,
         User.reset_token_expires_at > datetime.now(UTC),
@@ -524,15 +315,12 @@ async def verify_password_reset(
             detail="Invalid or expired reset token",
         )
 
-    # Update password
     user.password_hash = get_password_hash(reset_verify.password)
     user.reset_token = None
     user.reset_token_expires_at = None
 
-    # Revoke all refresh tokens for user
     await token_service.revoke_all_user_tokens(user.id.hex)
 
-    # Log action
     audit_log = AuditLog(
         user_id=user.id,
         action="password_reset",

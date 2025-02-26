@@ -1,56 +1,4 @@
 """Application configuration with secure defaults and validation.
-
-Example:
-```python
-from app.core.config import settings
-
-# Database connection (required)
-assert settings.DATABASE_URI.scheme == "postgresql+asyncpg"
-assert settings.DATABASE_URI.host != "localhost" or settings.DEBUG
-
-# Redis connection (required)
-assert settings.REDIS_URI.scheme == "redis"
-assert settings.REDIS_URI.host != "localhost" or settings.DEBUG
-
-# JWT configuration
-assert len(settings.JWT_SECRET) >= 32, "JWT secret too short"
-assert settings.JWT_ACCESS_TOKEN_EXPIRES_SECS <= 3600  # Max 1 hour
-assert settings.JWT_REFRESH_TOKEN_EXPIRES_SECS <= 604800  # Max 7 days
-
-# CORS security
-assert all(
-    origin.startswith("https://") for origin in settings.CORS_ORIGINS
-) or settings.DEBUG, "HTTPS required in production"
-
-# SMTP security
-assert settings.SMTP_PORT in (465, 587), "TLS required"
-assert not settings.DEBUG or settings.SMTP_HOST == "localhost"
-```
-
-Critical Security Notes:
-1. Secrets Management
-   - All secrets loaded from environment
-   - No defaults for sensitive data
-   - Secure string handling for passwords
-   - No logging of sensitive values
-
-2. Connection Security
-   - HTTPS required in production
-   - TLS required for SMTP
-   - Secure Redis connection
-   - PostgreSQL with SSL
-
-3. Token Security
-   - Limited token lifetimes
-   - Secure cookie settings
-   - CORS restrictions
-   - Rate limiting
-
-4. Environment Isolation
-   - Debug mode detection
-   - Environment validation
-   - Local development safety
-   - Production assertions
 """
 
 from functools import lru_cache
@@ -66,13 +14,12 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Security constants
 MIN_SECRET_LENGTH: Final[int] = 32
 MAX_ACCESS_TOKEN_EXPIRES: Final[int] = 3600
 MAX_REFRESH_TOKEN_EXPIRES: Final[int] = 604800
 SECURE_SMTP_PORTS: Final[tuple[int, ...]] = (465, 587)
-DEFAULT_RATE_LIMIT: Final[int] = 10  # 10 requests per minute
-DEFAULT_RATE_WINDOW: Final[int] = 60  # 1 minute window
+DEFAULT_RATE_LIMIT: Final[int] = 10
+DEFAULT_RATE_WINDOW: Final[int] = 60
 MIN_VERIFICATION_CODE_LENGTH: Final[int] = 16
 
 
@@ -266,13 +213,7 @@ class Settings(BaseSettings):
     @field_validator("SMTP_PORT")
     @classmethod
     def validate_smtp_port(cls, v: int, info: ValidationInfo) -> int:
-        """Validate SMTP port for security.
-
-        Security:
-        - Requires TLS ports
-        - No plain text allowed
-        - Debug mode checks
-        """
+        """Validate SMTP port for security."""
         debug = info.data.get("DEBUG", False)
         if not debug:
             assert v in SECURE_SMTP_PORTS, f"SMTP port must be one of {SECURE_SMTP_PORTS} for TLS"
@@ -281,19 +222,8 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Get validated settings instance.
-
-    Returns:
-        Settings: Validated configuration
-
-    Security:
-        - Single instance
-        - Cached access
-        - Validated fields
-        - Environment loading
-    """
+    """Get validated settings instance."""
     return Settings()  # type: ignore[call-arg]
 
 
-# Global settings instance
-settings = get_settings()
+settings: Final[Settings] = get_settings()

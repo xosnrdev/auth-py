@@ -1,29 +1,4 @@
-"""Secure transactional email service with TLS and template support.
-
-Example:
-```python
-# Initialize service
-email_svc = EmailService()
-
-# Send verification email
-await email_svc.send_verification_email(
-    to_email="user@example.com",
-    verification_code="abc123"  # From your token generator
-)
-
-# Send password reset
-await email_svc.send_password_reset_email(
-    to_email="user@example.com",
-    reset_token="xyz789"  # From your token generator
-)
-```
-
-Critical Notes:
-- Requires SMTP with TLS (port 587 or 465)
-- Set all SMTP_* environment variables before use
-- URLs must be HTTPS in production
-- Tokens should have < 24h expiry
-"""
+"""Secure transactional email service with TLS and template support."""
 
 import asyncio
 import logging
@@ -37,10 +12,8 @@ from pydantic import EmailStr, SecretStr
 
 from app.core.config import settings
 
-# Initialize logger
 logger = logging.getLogger(__name__)
 
-# Constants
 MAX_SUBJECT_LENGTH: Final[int] = 78
 MAX_RETRIES: Final[int] = 3
 RETRY_DELAY_SECONDS: Final[int] = 1
@@ -50,17 +23,9 @@ MIME_TYPE_ALTERNATIVE: Final[str] = "alternative"
 
 
 class EmailError(Exception):
-    """Base exception for email service errors.
-
-    Provides a safe, user-friendly message while logging the actual error.
-    """
+    """Base exception for email service errors."""
     def __init__(self, message: str, detail: str | None = None) -> None:
-        """Initialize with user-safe message and optional detail for logging.
-
-        Args:
-            message: Safe message for user display
-            detail: Detailed error for logging
-        """
+        """Initialize with user-safe message and optional detail for logging."""
         self.message = message
         self.detail = detail or message
         super().__init__(self.message)
@@ -72,7 +37,6 @@ class EmailService:
     def __init__(self) -> None:
         """Initialize with SMTP settings from environment."""
         try:
-            # Assert required settings
             assert settings.SMTP_HOST, "SMTP_HOST must be set"
             assert settings.SMTP_PORT, "SMTP_PORT must be set"
             assert settings.SMTP_USER, "SMTP_USER must be set"
@@ -110,24 +74,12 @@ class EmailService:
         html_content: str,
         text_content: str,
     ) -> None:
-        """Send email with retry logic.
-
-        Args:
-            to_email: Recipient email
-            subject: Email subject
-            html_content: HTML version
-            text_content: Plain text version
-
-        Raises:
-            EmailError: If sending fails after retries
-        """
+        """Send email with retry logic."""
         try:
-            # Validate inputs
             assert len(subject) <= MAX_SUBJECT_LENGTH, f"Subject exceeds {MAX_SUBJECT_LENGTH} chars"
             assert html_content, "HTML content required"
             assert text_content, "Text content required"
 
-            # Create message
             msg = MIMEMultipart(MIME_TYPE_ALTERNATIVE)
             msg["Subject"] = subject
             msg["From"] = f"{self.from_name} <{self.from_email}>"
@@ -135,7 +87,6 @@ class EmailService:
             msg.attach(MIMEText(text_content, MIME_TYPE_PLAIN))
             msg.attach(MIMEText(html_content, MIME_TYPE_HTML))
 
-            # Send with retries
             last_error: Exception | None = None
             for attempt in range(MAX_RETRIES):
                 try:
@@ -192,25 +143,13 @@ class EmailService:
         to_email: EmailStr,
         verification_code: str,
     ) -> None:
-        """Send email verification link.
-
-        Args:
-            to_email: User's email
-            verification_code: Secure token
-
-        Raises:
-            RuntimeError: If sending fails
-        """
-        # Validate inputs
+        """Send email verification link."""
         assert verification_code, "Verification code required"
-
-        # Generate URL
         verification_url = urljoin(
             settings.APP_URL,
             f"{settings.VERIFICATION_URL_PATH}?code={verification_code}",
         )
 
-        # Create content
         text_content = (
             f"Please verify your email:\n"
             f"{verification_url}\n\n"
@@ -237,25 +176,14 @@ class EmailService:
         to_email: EmailStr,
         reset_token: str,
     ) -> None:
-        """Send password reset link.
-
-        Args:
-            to_email: User's email
-            reset_token: Secure token
-
-        Raises:
-            RuntimeError: If sending fails
-        """
-        # Validate inputs
+        """Send password reset link."""
         assert reset_token, "Reset token required"
 
-        # Generate URL
         reset_url = urljoin(
             settings.APP_URL,
             f"{settings.PASSWORD_RESET_URL_PATH}?token={reset_token}",
         )
 
-        # Create content
         text_content = (
             f"Reset your password:\n"
             f"{reset_url}\n\n"
@@ -282,19 +210,9 @@ class EmailService:
         to_email: EmailStr,
         new_email: str,
     ) -> None:
-        """Send notification about email address change.
-
-        Args:
-            to_email: Old email address
-            new_email: New email address
-
-        Raises:
-            RuntimeError: If sending fails
-        """
-        # Validate inputs
+        """Send notification about email address change."""
         assert new_email, "New email required"
 
-        # Create content
         text_content = (
             f"Your email address has been changed to {new_email}.\n\n"
             f"If you did not request this change, please contact support immediately."

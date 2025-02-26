@@ -1,47 +1,4 @@
-"""FastAPI application entry point with secure defaults.
-
-Example:
-```python
-# Run development server
-fastapi dev
-
-# Test the API
-curl http://localhost:8000/health
-{
-    "status": "healthy",
-    "checks": {
-        "database": "connected",
-        "redis": "connected",
-        "timestamp": "2025-02-24T10:20:30Z"
-    }
-}
-```
-
-Critical Security Notes:
-1. Database Security
-   - Tables auto-created if missing
-   - Connections pooled and limited
-   - Transactions auto-rollback
-   - SSL required in production
-
-2. Redis Security
-   - Connection pooling enabled
-   - Health checks active
-   - Auto-cleanup on shutdown
-   - TLS required in production
-
-3. API Security
-   - Rate limiting per endpoint
-   - Security headers enforced
-   - CORS restrictions active
-   - Input validation strict
-
-4. Documentation Security
-   - No sensitive data exposed
-   - Bearer auth required
-   - Rate limits documented
-   - Error formats specified
-"""
+"""FastAPI application entry point."""
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -63,102 +20,38 @@ from app.core.middleware import (
     SecurityHeadersMiddleware,
     setup_cors,
 )
-from app.core.redis import close_redis, init_redis, redis
-from app.db.base import engine
+from app.db.postgres import engine
+from app.db.redis import close_redis, init_redis, redis
 from app.models import Base
 
-# Constants for health check
 HEALTH_STATUS_HEALTHY: Final[str] = "healthy"
 HEALTH_STATUS_UNHEALTHY: Final[str] = "unhealthy"
 HEALTH_STATUS_CONNECTED: Final[str] = "connected"
 HEALTH_STATUS_ERROR: Final[str] = "error"
 
-# Constants for OpenAPI
 OPENAPI_BEARER_FORMAT: Final[str] = "JWT"
 OPENAPI_AUTH_SCHEME: Final[str] = "bearer"
 OPENAPI_AUTH_TYPE: Final[str] = "http"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-    """Application lifecycle manager.
-
-    Example:
-    ```python
-    app = FastAPI(lifespan=lifespan)
-    # Database and Redis auto-initialized
-    # Connections auto-cleaned on shutdown
-    ```
-
-    Critical Notes:
-    1. Database Setup
-       - Tables created if missing
-       - Migrations should be used in production
-       - Connections pooled and limited
-       - SSL enforced in production
-
-    2. Redis Setup
-       - Connection pool initialized
-       - Health checks enabled
-       - Auto-cleanup on shutdown
-       - TLS required in production
-
-    3. Error Handling
-       - Failed setup raises
-       - Cleanup always runs
-       - Resources released
-       - Connections closed
-    """
+    """Application lifecycle manager."""
     try:
-        # Initialize database
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-        # Initialize Redis
         await init_redis()
 
         yield
 
     finally:
-        # Cleanup
         if isinstance(engine, AsyncEngine):
             await engine.dispose()
         await close_redis()
 
 
 def custom_openapi() -> dict[str, Any]:
-    """OpenAPI schema with security focus.
-
-    Example:
-    ```python
-    # Bearer token auth
-    curl -H "Authorization: Bearer eyJ..." \\
-         http://localhost:8000/api/v1/auth/me
-
-    # Rate limit headers
-    < X-RateLimit-Limit: 100
-    < X-RateLimit-Remaining: 99
-    < X-RateLimit-Reset: 1612345678
-    ```
-
-    Critical Notes:
-    1. Authentication
-       - Bearer tokens required
-       - JWT format enforced
-       - Tokens expire
-       - Refresh supported
-
-    2. Rate Limiting
-       - Per-endpoint limits
-       - Headers exposed
-       - Reset time provided
-       - 429 when exceeded
-
-    3. Error Format
-       - RFC 7807 compliant
-       - No system details
-       - Validation errors
-       - Clear messages
-    """
+    """Custom OpenAPI schema with security focus."""
     if app.openapi_schema:
         return app.openapi_schema
 
@@ -169,7 +62,6 @@ def custom_openapi() -> dict[str, Any]:
         routes=app.routes,
     )
 
-    # Add security schemes
     openapi_schema["components"]["securitySchemes"] = {
         "HTTPBearer": {
             "type": OPENAPI_AUTH_TYPE,
@@ -179,7 +71,6 @@ def custom_openapi() -> dict[str, Any]:
         }
     }
 
-    # Add response examples
     openapi_schema["components"]["examples"] = {
         "TokenResponse": {
             "summary": "Successful auth response",
@@ -234,27 +125,7 @@ app = FastAPI(
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html() -> Response:
-    """Secure Swagger UI implementation.
-
-    Example:
-    ```python
-    # Access interactive docs
-    open http://localhost:8000/docs
-    ```
-
-    Critical Notes:
-    1. Security
-       - OAuth2 support enabled
-       - HTTPS CDN resources
-       - No sensitive data
-       - Version controlled
-
-    2. Features
-       - Interactive testing
-       - Auth flows documented
-       - Examples provided
-       - Error responses shown
-    """
+    """Secure Swagger UI implementation."""
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title=app.title,
@@ -279,21 +150,7 @@ async def add_api_version_header(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
-    """Add API version for tracking.
-
-    Example:
-    ```python
-    # Response includes version
-    < X-API-Version: 1.0.0
-    ```
-
-    Critical Notes:
-    1. Security
-       - No sensitive data
-       - Version controlled
-       - Headers validated
-       - Safe defaults
-    """
+    """Add API version for tracking."""
     response = await call_next(request)
     response.headers["X-API-Version"] = settings.PROJECT_VERSION
     return response
@@ -307,36 +164,8 @@ app.include_router(api_v1_router, prefix="/api")
 
 @app.get("/health")
 async def health_check() -> dict[str, str | dict[str, str]]:
-    """System health check endpoint.
+    """System health check endpoint."""
 
-    Example:
-    ```python
-    # Check system health
-    curl http://localhost:8000/health
-    {
-        "status": "healthy",
-        "checks": {
-            "database": "connected",
-            "redis": "connected",
-            "timestamp": "2025-02-23T10:20:30Z"
-        }
-    }
-    ```
-
-    Critical Notes:
-    1. Security
-       - No sensitive data
-       - Limited information
-       - Safe error handling
-       - Status codes only
-
-    2. Checks
-       - Database connection
-       - Redis connection
-       - System timestamp
-       - Overall status
-    """
-    # Check database
     db_healthy = True
     try:
         async with engine.begin() as conn:
@@ -344,14 +173,12 @@ async def health_check() -> dict[str, str | dict[str, str]]:
     except Exception:
         db_healthy = False
 
-    # Check Redis
     redis_healthy = True
     try:
         await redis.ping()
     except Exception:
         redis_healthy = False
 
-    # Overall status
     status = HEALTH_STATUS_HEALTHY if db_healthy and redis_healthy else HEALTH_STATUS_UNHEALTHY
     timestamp = datetime.now(UTC).isoformat()
 
@@ -366,26 +193,7 @@ async def health_check() -> dict[str, str | dict[str, str]]:
 
 @app.get("/")
 async def read_root() -> dict[str, str]:
-    """Root endpoint with API info.
-
-    Example:
-    ```python
-    # Get API info
-    curl http://localhost:8000/
-    {
-        "name": "Auth Service",
-        "version": "1.0.0",
-        "docs_url": "/docs"
-    }
-    ```
-
-    Critical Notes:
-    1. Security
-       - Public endpoint
-       - No sensitive data
-       - Version controlled
-       - Safe response
-    """
+    """Root endpoint with API info."""
     return {
         "name": settings.PROJECT_NAME,
         "version": settings.PROJECT_VERSION,

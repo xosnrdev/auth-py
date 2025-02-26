@@ -1,37 +1,4 @@
-"""User data validation schemas with examples.
-
-Example:
-```python
-# Create new user
-user = UserCreate(
-    email="user@example.com",
-    password="strongP@ssw0rd",  # Min 8 chars
-    phone="+1234567890",        # Optional, E.164 format
-    roles=["user"]              # Default: ["user"]
-)
-
-# Update user
-update = UserUpdate(
-    phone="+1987654321",
-    password="newP@ssw0rd",
-    is_active=True
-)
-
-# Password reset flow
-reset_req = PasswordResetRequest(email="user@example.com")
-reset_verify = PasswordResetVerify(
-    token="abc123...",          # From email
-    password="newP@ssw0rd"      # Min 8 chars
-)
-```
-
-Critical Notes:
-- Passwords: 8-72 chars (bcrypt limit)
-- Phone: E.164 format (+1234567890)
-- Roles: Default is ["user"]
-- Email validation uses EmailStr
-- All fields validated before DB ops
-"""
+"""User data validation schemas with examples."""
 
 from typing import Final
 
@@ -39,9 +6,8 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.schemas.base import BaseSchema
 
-# Constants
 MIN_PASSWORD_LENGTH: Final[int] = 8
-MAX_PASSWORD_LENGTH: Final[int] = 72  # bcrypt limit
+MAX_PASSWORD_LENGTH: Final[int] = 72
 MIN_TOKEN_LENGTH: Final[int] = 32
 MAX_TOKEN_LENGTH: Final[int] = 64
 DEFAULT_ROLE: Final[str] = "user"

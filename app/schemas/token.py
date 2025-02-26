@@ -1,46 +1,10 @@
-"""JWT token validation schemas with examples.
-
-Example:
-```python
-# Login response
-token = TokenResponse(
-    access_token="eyJhbGciOiJIUzI1NiI...",  # JWT token
-    refresh_token="eyJhbGciOiJIUzI1NiI...",  # Optional
-    token_type="bearer",
-    expires_in=3600  # Seconds
-)
-
-# Token introspection (RFC 7662)
-info = TokenIntrospectionResponse(
-    active=True,
-    token_type="access",
-    exp=1684081234,  # Unix timestamp
-    sub="user-123"   # User ID
-)
-
-# OAuth2 metadata
-meta = TokenMetadataResponse(
-    issuer="https://auth.example.com",
-    response_types_supported=["code"],
-    grant_types_supported=["authorization_code"],
-    code_challenge_methods_supported=["S256"]
-)
-```
-
-Critical Notes:
-- All timestamps are Unix epoch seconds
-- Token types: "access" or "refresh" only
-- Bearer tokens only (JWT format)
-- PKCE S256 required for auth code
-- All URLs must be HTTPS
-"""
+"""JWT token validation schemas"""
 
 from typing import Final, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-# Constants
 TOKEN_TYPE_BEARER: Final[str] = "bearer"
 TOKEN_TYPES: Final[tuple[str, str]] = ("access", "refresh")
 DEFAULT_EXPIRES_IN: Final[int] = 3600

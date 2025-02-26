@@ -1,10 +1,4 @@
-"""Authentication utilities and decorators.
-
-This module implements secure authentication utilities following RFC standards:
-- Role-based access control (RBAC)
-- Permission checking
-- Security decorators
-"""
+"""Authentication utilities and decorators."""
 
 from collections.abc import Awaitable, Callable
 from enum import Enum
@@ -16,7 +10,6 @@ from fastapi import Depends, HTTPException, status
 from app.api.v1.dependencies import get_current_user
 from app.models import User
 
-# Type variables for generic function signatures
 P = ParamSpec("P")
 T = TypeVar("T")
 
@@ -139,7 +132,6 @@ def check_roles(
     return role_checker
 
 
-# Common role requirements
 requires_admin = requires("admin")
 requires_super_admin = requires("admin", "super", mode=RequireMode.ALL)
 check_admin = check_roles(["admin"])

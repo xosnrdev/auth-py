@@ -1,40 +1,4 @@
-"""SQLAlchemy User model with role-based access control.
-
-Example:
-```python
-# Create new user
-user = User(
-    email="user@example.com",
-    phone="+1234567890",          # Optional, E.164 format
-    password_hash="bcrypt$...",   # From password hasher
-    roles=["user", "admin"],      # Default: ["user"]
-    is_verified=False,            # Email verification
-    is_active=True               # Account status
-)
-
-# Check permissions
-if user.has_role("admin"):
-    # Admin operations
-    pass
-
-if user.has_any_role(["admin", "moderator"]):
-    # Staff operations
-    pass
-
-if user.has_all_roles(["user", "premium"]):
-    # Premium user operations
-    pass
-```
-
-Critical Notes:
-- All timestamps use UTC
-- Email must be unique
-- Phone must be E.164 format
-- Password uses bcrypt hash
-- Default role is "user"
-- Verification codes expire
-- Reset tokens expire
-"""
+"""SQLAlchemy User model with role-based access control."""
 
 from datetime import datetime
 from typing import Final
@@ -45,7 +9,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
 
-# Constants
 MAX_EMAIL_LENGTH: Final[int] = 255
 MAX_PHONE_LENGTH: Final[int] = 20
 MAX_VERIFICATION_CODE_LENGTH: Final[int] = 32
@@ -58,7 +21,6 @@ class User(Base):
 
     __tablename__ = "users"
 
-    # Authentication fields
     email: Mapped[str] = mapped_column(
         String(MAX_EMAIL_LENGTH),
         unique=True,
@@ -81,14 +43,12 @@ class User(Base):
         server_default="{}",
     )
 
-    # Role-based access control
     roles: Mapped[list[str]] = mapped_column(
         JSONB,
         nullable=False,
         server_default=f'["{DEFAULT_ROLE}"]',
     )
 
-    # Status fields
     is_verified: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -100,7 +60,6 @@ class User(Base):
         server_default="true",
     )
 
-    # Email verification
     verification_code: Mapped[str | None] = mapped_column(
         String(MAX_VERIFICATION_CODE_LENGTH),
         nullable=True,
@@ -116,7 +75,6 @@ class User(Base):
         index=True,
     )
 
-    # Password reset
     reset_token: Mapped[str | None] = mapped_column(
         String(MAX_RESET_TOKEN_LENGTH),
         nullable=True,
