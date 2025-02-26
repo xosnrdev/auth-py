@@ -1,6 +1,7 @@
 services:
   app:
     build: .
+    container_name: auth-py
     ports:
       - ${API_PORT:-8000}:${API_PORT:-8000}
     volumes:
@@ -70,6 +71,7 @@ services:
 
   postgres:
     image: postgres:17.3-alpine3.21
+    container_name: auth-py-postgres
     restart: always
     ports:
       - ${POSTGRES_PORT}:${POSTGRES_PORT}
@@ -87,6 +89,7 @@ services:
 
   redis:
     image: redis:7.4.2-alpine3.21
+    container_name: auth-py-redis
     restart: always
     ports:
       - ${REDIS_PORT}:${REDIS_PORT}
