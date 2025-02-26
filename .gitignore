@@ -16,6 +16,7 @@ coverage.xml
 
 # IDE files
 .cursor
+.cursorignore
     
 # Environment variables
 .env
