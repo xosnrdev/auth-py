@@ -73,10 +73,16 @@ class Settings(BaseSettings):
         description="Enable debug mode (less strict validation)",
     )
 
+    LOG_LEVEL: str = Field(
+        default="DEBUG" if DEBUG else "INFO",
+        pattern=r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
+        description="Logging level",
+    )
+
     # Security settings
-    JWT_SECRET: str = Field(
+    JWT_SECRET: SecretStr = Field(
         min_length=MIN_SECRET_LENGTH,
-        description="Secret key for JWT signing (min 32 chars)",
+        description="Secret key for JWT signing and session encryption (min 32 chars)",
     )
     JWT_ACCESS_TOKEN_EXPIRES_SECS: int = Field(
         default=900,

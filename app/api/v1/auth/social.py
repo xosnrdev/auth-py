@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 
 from app.api.v1.dependencies import DBSession
 from app.core.auth import requires_admin
+from app.core.config import settings
 from app.core.jwt import TokenResponse, token_service
 from app.core.oauth2 import AppleOAuthUserInfo, OAuthUserInfo, oauth
 from app.models import User
@@ -35,6 +36,8 @@ class ProviderType(str, Enum):
 async def google_login(request: Request) -> Response:
     """Start Google OAuth2 flow."""
     redirect_uri = request.url_for('oauth_callback_google')
+    state = settings.JWT_SECRET.get_secret_value()[:32]
+    request.session['oauth_state'] = state
     response = await oauth.google.authorize_redirect(request, redirect_uri)
     return cast(Response, response)
 
@@ -60,15 +63,19 @@ async def oauth_callback_google(
             email=user_info['email'],
             is_active=True,
             is_verified=user_info['email_verified'],
-            name=user_info.get('name'),
-            picture=user_info.get('picture'),
-            locale=user_info.get('locale'),
-            oauth_provider=user_info['provider'],
-            oauth_subject=user_info['sub'],
+            password_hash="",
+            social_id={
+                ProviderType.GOOGLE.value: user_info['sub']
+            }
         )
         db.add(user)
         await db.commit()
         await db.refresh(user)
+    else:
+        # Update social ID if not already set
+        if ProviderType.GOOGLE.value not in user.social_id:
+            user.social_id[ProviderType.GOOGLE.value] = user_info['sub']
+            await db.commit()
 
     # Create tokens
     tokens = await token_service.create_tokens(
