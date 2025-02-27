@@ -19,6 +19,7 @@ from app.core.middleware import (
     SecurityHeadersMiddleware,
     setup_cors,
 )
+from app.core.middleware.session import setup_session_middleware
 from app.db.postgres import engine
 from app.db.redis import close_redis, init_redis
 from app.models import Base
@@ -27,6 +28,18 @@ from app.models import Base
 OPENAPI_BEARER_FORMAT: Final[str] = "JWT"
 OPENAPI_AUTH_SCHEME: Final[str] = "bearer"
 OPENAPI_AUTH_TYPE: Final[str] = "http"
+
+# Paths to exclude from rate limiting
+RATE_LIMIT_EXCLUDED_PATHS: Final[set[str]] = {
+    "/docs",
+    "/redoc",
+    "/api/openapi.json",
+    SWAGGER_OAUTH2_REDIRECT_URL,
+    "/health",
+    "/",
+    "/api/v1/auth/social/google/authorize",
+    "/api/v1/auth/social/google/callback",
+}
 
 
 @asynccontextmanager
@@ -132,11 +145,18 @@ def register_middleware(app: FastAPI) -> None:
             response.headers["X-API-Version"] = settings.PROJECT_VERSION
             return response
 
+    # Session middleware
+    setup_session_middleware(app, secret_key=settings.JWT_SECRET.get_secret_value())
+
+    # Security middleware
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(
         RateLimitMiddleware,
+        exclude_paths=RATE_LIMIT_EXCLUDED_PATHS,
     )
     app.add_middleware(APIVersionMiddleware)
+
+    # CORS
     setup_cors(app)
 
 

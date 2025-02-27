@@ -1,5 +1,6 @@
 """OAuth2 integration using Authlib."""
 
+import logging
 from typing import Annotated, TypedDict
 
 from authlib.integrations.starlette_client import OAuth
@@ -7,7 +8,19 @@ from fastapi import Depends, HTTPException, Request, status
 
 from app.core.config import settings
 
-oauth: OAuth = OAuth()  # type: ignore[no-untyped-call]
+logger = logging.getLogger(__name__)
+
+class CustomOAuth(OAuth):
+    """Custom OAuth class with state validation."""
+
+    async def validate_state(self, request: Request) -> bool:
+        """Validate state parameter."""
+        state = request.query_params.get('state')
+        session_state = request.session.get('oauth_state')
+        logger.debug("Validating state - Request: %s, Session: %s", state, session_state)
+        return state == session_state
+
+oauth: OAuth = CustomOAuth()  # type: ignore[no-untyped-call]
 
 class UserInfo(TypedDict):
     """Common user info structure following OpenID Connect."""
@@ -26,7 +39,10 @@ oauth.register(
     server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
     client_kwargs={
         'scope': 'openid email profile',
-        'code_challenge_method': 'S256'
+        'code_challenge_method': 'S256',
+        'response_type': 'code',
+        'response_mode': 'query',
+        'prompt': 'select_account'
     }
 )
 
@@ -53,11 +69,40 @@ async def require_user_info(
         if not client:
             raise ValueError(f"Unknown provider: {provider}")
 
+        logger.debug(
+            "OAuth callback received - URL: %s, Query Params: %s, Session: %s",
+            str(request.url),
+            request.query_params,
+            request.session
+        )
+
+        # Token exchange
         token = await client.authorize_access_token(request)
-        user = await client.parse_id_token(request, token)
+        if not isinstance(token, dict):
+            raise ValueError("Invalid token response format")
+
+        logger.debug("OAuth token response: %s", {
+            k: "..." if k in ("id_token", "access_token") else v
+            for k, v in token.items()
+        })
+
+        # Get user info
+        user = await client.userinfo(token=token)
+        if not user:
+            raise ValueError("Failed to get user info")
+
+        logger.debug("User info: %s", {
+            k: v for k, v in user.items() if k not in ('sub',)
+        })
+
+        if not user.get('email'):
+            raise ValueError("Email missing from user info")
 
         if not user.get('email_verified', False):
             raise ValueError("Email must be verified")
+
+        if not user.get('sub'):
+            raise ValueError("Subject identifier missing from user info")
 
         return UserInfo(
             provider=provider,
@@ -69,15 +114,15 @@ async def require_user_info(
             locale=user.get('locale')
         )
 
-    except (ValueError, KeyError) as e:
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
-    except Exception:
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication failed"
+            detail=f"Authentication failed: {str(e)}"
         )
 
 OAuthUserInfo = Annotated[UserInfo, Depends(require_user_info)]

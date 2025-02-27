@@ -67,21 +67,20 @@ ENDPOINT_RATE_LIMITS: Final[dict[str, RateLimit]] = {
     "/api/v1/admin/audit/logs/*": MEDIUM_SECURITY_LIMIT,
 }
 
-EXCLUDED_PATHS: Final[tuple[str, ...]] = (
-    "/static/",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
-)
-
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Rate limiting middleware using Redis sliding window."""
 
-    def __init__(self, app: Any, redis_client: Redis | None = None) -> None:
+    def __init__(
+        self,
+        app: Any,
+        redis_client: Redis | None = None,
+        exclude_paths: set[str] | None = None,
+    ) -> None:
         """Initialize rate limit middleware."""
         super().__init__(app)
         self.redis = redis_client or default_redis
+        self.exclude_paths = exclude_paths or set()
 
     def get_rate_limit(self, path: str) -> RateLimit:
         """Get rate limit config for path."""
@@ -102,7 +101,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         """Process request through rate limiting."""
-        if any(request.url.path.startswith(path) for path in EXCLUDED_PATHS):
+        if request.url.path in self.exclude_paths:
             return await call_next(request)
 
         rate_limit = self.get_rate_limit(request.url.path)

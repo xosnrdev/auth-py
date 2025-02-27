@@ -80,7 +80,7 @@ class TokenService:
     def __init__(self) -> None:
         """Initialize with secure defaults."""
         assert settings.JWT_SECRET, "JWT secret must be configured"
-        self.secret = settings.JWT_SECRET
+        self.secret = settings.JWT_SECRET.get_secret_value()
 
     async def create_tokens(
         self,

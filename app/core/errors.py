@@ -1,7 +1,7 @@
 """HTTP error handling following RFC 7807 Problem Details."""
 
 from http import HTTPStatus
-from typing import Any, Final, cast
+from typing import Any, Final
 
 from fastapi import HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -14,6 +14,8 @@ AUTH_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:7807:auth"
 RATE_LIMIT_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:6585:status:429"
 RESOURCE_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:7231:status:404"
 SERVER_ERROR_TYPE: Final[str] = "urn:ietf:params:rfc:7231:status:500"
+
+MAX_INSTANCE_LENGTH: Final[int] = 255
 
 ERROR_CODES: Final[dict[int, str]] = {
     status.HTTP_401_UNAUTHORIZED: "AUTH001",
@@ -61,85 +63,67 @@ class ProblemDetail(BaseModel):
 
     model_config = ConfigDict(
         json_schema_extra={
-            "example": {
-                "type": "urn:ietf:params:rfc:7807:validation",
-                "title": "Validation Error",
-                "status": 400,
-                "detail": "Email format is invalid",
-                "instance": "/api/v1/users",
-                "code": "VALIDATION001",
-                "errors": [{
-                    "loc": ["email"],
-                    "msg": "Invalid email format",
-                    "type": "pattern_mismatch"
-                }]
-            }
+            "examples": [
+                {
+                    "type": "validation_error",
+                    "title": "Validation Error",
+                    "status": 422,
+                    "detail": "Password too short",
+                    "instance": "/api/v1/auth/register",
+                    "errors": [
+                        {
+                            "loc": ["body", "password"],
+                            "msg": "min length 8",
+                            "type": "value_error",
+                        }
+                    ],
+                }
+            ]
         }
     )
 
-    type: str = Field(
-        default=DEFAULT_ERROR_TYPE,
-        description="A URI reference [RFC3986] that identifies the problem type",
-        examples=["urn:ietf:params:rfc:7807:validation"],
-        max_length=255,
-    )
-    title: str = Field(
-        description="Short, human-readable problem summary",
-        examples=["Validation Error"],
-        max_length=255,
-    )
-    status: int = Field(
-        description="HTTP status code",
-        ge=100,
-        le=599,
-        examples=[400],
-    )
-    detail: str = Field(
-        description="Human-readable explanation of the error",
-        examples=["Email format is invalid"],
-        max_length=1024,
-    )
-    instance: str | None = Field(
-        default=None,
-        description="URI reference for the specific occurrence",
-        examples=["/api/v1/users"],
-        max_length=255,
-    )
-    code: str | None = Field(
-        default=None,
-        description="Machine-readable error code",
-        examples=["VALIDATION001"],
-        max_length=20,
-    )
-    errors: list[dict[str, Any]] | None = Field(
-        default=None,
-        description="Detailed validation errors",
-        examples=[[{
-            "loc": ["email"],
-            "msg": "Invalid email format",
-            "type": "pattern_mismatch"
-        }]],
-    )
+    type: str = Field(default=DEFAULT_ERROR_TYPE)
+    title: str
+    status: int
+    detail: str
+    instance: str = Field(max_length=MAX_INSTANCE_LENGTH)
+    code: str | None = None
+    errors: list[dict[str, Any]] | None = None
 
 
-async def http_error_handler(
-    request: Request,
-    exc: HTTPException,
-) -> JSONResponse:
-    """Handle HTTPException with RFC 7807 format."""
-    error_code = ERROR_CODES.get(exc.status_code)
-    error_type = DEFAULT_ERROR_TYPE
-    if error_code:
-        prefix = error_code[:error_code.find("0")]
-        error_type = ERROR_TYPES.get(prefix, DEFAULT_ERROR_TYPE)
+def truncate_url(url: str, max_length: int = MAX_INSTANCE_LENGTH) -> str:
+    """Truncate URL to max length while preserving the path.
+
+    Args:
+        url: URL to truncate
+        max_length: Maximum length allowed
+
+    Returns:
+        Truncated URL with path preserved
+    """
+    if len(url) <= max_length:
+        return url
+
+    path = url.split("?")[0]
+    if len(path) > max_length:
+        return path[:max_length-3] + "..."
+    return path
+
+
+async def http_error_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Handle HTTP exceptions by converting to RFC 7807 problem details."""
+    error_type = ERROR_TYPES.get(
+        ERROR_CODES.get(exc.status_code, "").split("0")[0],
+        DEFAULT_ERROR_TYPE,
+    )
 
     problem = ProblemDetail(
         type=error_type,
-        title=HTTP_STATUS_TITLES.get(exc.status_code, HTTPStatus(exc.status_code).phrase),
+        title=HTTPStatus(exc.status_code).phrase,
         status=exc.status_code,
         detail=str(exc.detail),
-        instance=str(request.url),
-        code=error_code,
+        instance=truncate_url(str(request.url)),
+        code=ERROR_CODES.get(exc.status_code),
     )
 
     headers = {
@@ -160,15 +144,22 @@ async def validation_error_handler(
     request: Request,
     exc: RequestValidationError,
 ) -> JSONResponse:
-    """Handle validation errors with RFC 7807 format."""
+    """Handle validation errors by converting to RFC 7807 problem details."""
     problem = ProblemDetail(
         type=VALIDATION_ERROR_TYPE,
         title="Validation Error",
         status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        detail="Request parameters failed validation",
-        instance=str(request.url),
+        detail="Request validation failed",
+        instance=truncate_url(str(request.url)),
         code=ERROR_CODES[status.HTTP_422_UNPROCESSABLE_ENTITY],
-        errors=cast(list[dict[str, Any]], exc.errors()),
+        errors=[
+            {
+                "loc": err["loc"],
+                "msg": err["msg"],
+                "type": err["type"],
+            }
+            for err in exc.errors()
+        ],
     )
 
     return JSONResponse(
