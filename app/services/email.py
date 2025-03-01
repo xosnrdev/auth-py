@@ -24,6 +24,7 @@ MIME_TYPE_ALTERNATIVE: Final[str] = "alternative"
 
 class EmailError(Exception):
     """Base exception for email service errors."""
+
     def __init__(self, message: str, detail: str | None = None) -> None:
         """Initialize with user-safe message and optional detail for logging."""
         self.message = message
@@ -55,13 +56,15 @@ class EmailService:
             logger.error("Email service configuration error: %s", str(e))
             raise EmailError(
                 message="Email service configuration error",
-                detail=f"Configuration error: {str(e)}"
+                detail=f"Configuration error: {str(e)}",
             )
         except Exception as e:
-            logger.error("Unexpected error during email service initialization: %s", str(e))
+            logger.error(
+                "Unexpected error during email service initialization: %s", str(e)
+            )
             raise EmailError(
                 message="Email service initialization failed",
-                detail=f"Initialization error: {str(e)}"
+                detail=f"Initialization error: {str(e)}",
             )
 
     async def _send_email(
@@ -73,7 +76,9 @@ class EmailService:
     ) -> None:
         """Send email with retry logic."""
         try:
-            assert len(subject) <= MAX_SUBJECT_LENGTH, f"Subject exceeds {MAX_SUBJECT_LENGTH} chars"
+            assert len(subject) <= MAX_SUBJECT_LENGTH, (
+                f"Subject exceeds {MAX_SUBJECT_LENGTH} chars"
+            )
             assert html_content, "HTML content required"
             assert text_content, "Text content required"
 
@@ -92,7 +97,9 @@ class EmailService:
                         port=self.port,
                         use_tls=True,
                     ) as smtp:
-                        await smtp.login(self.username, self.password.get_secret_value())
+                        await smtp.login(
+                            self.username, self.password.get_secret_value()
+                        )
                         await smtp.send_message(msg)
                         logger.info("Email sent to %s", to_email)
                         return
@@ -100,7 +107,7 @@ class EmailService:
                     logger.error("SMTP authentication failed: %s", str(e))
                     raise EmailError(
                         message="Email service authentication failed",
-                        detail=f"SMTP auth error: {str(e)}"
+                        detail=f"SMTP auth error: {str(e)}",
                     )
                 except Exception as e:
                     last_error = e
@@ -114,25 +121,27 @@ class EmailService:
                         await asyncio.sleep(RETRY_DELAY_SECONDS)
 
             assert last_error is not None
-            logger.error("Email sending failed after %d attempts: %s", MAX_RETRIES, str(last_error))
+            logger.error(
+                "Email sending failed after %d attempts: %s",
+                MAX_RETRIES,
+                str(last_error),
+            )
             raise EmailError(
                 message="Failed to send email",
-                detail=f"Failed after {MAX_RETRIES} attempts: {str(last_error)}"
+                detail=f"Failed after {MAX_RETRIES} attempts: {str(last_error)}",
             )
 
         except AssertionError as e:
             logger.error("Email validation error: %s", str(e))
             raise EmailError(
-                message="Email validation failed",
-                detail=f"Validation error: {str(e)}"
+                message="Email validation failed", detail=f"Validation error: {str(e)}"
             )
         except EmailError:
             raise
         except Exception as e:
             logger.error("Unexpected error during email sending: %s", str(e))
             raise EmailError(
-                message="Failed to send email",
-                detail=f"Unexpected error: {str(e)}"
+                message="Failed to send email", detail=f"Unexpected error: {str(e)}"
             )
 
     async def send_verification_email(
@@ -227,5 +236,6 @@ class EmailService:
             html_content=html_content,
             text_content=text_content,
         )
+
 
 email_service = EmailService()
