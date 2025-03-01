@@ -106,7 +106,7 @@ def truncate_url(url: str, max_length: int = MAX_INSTANCE_LENGTH) -> str:
 
     path = url.split("?")[0]
     if len(path) > max_length:
-        return path[:max_length-3] + "..."
+        return path[: max_length - 3] + "..."
     return path
 
 
@@ -201,3 +201,19 @@ class DuplicateError(DatabaseError):
 
 class NotFoundError(RepositoryError):
     """Error raised when a requested resource is not found."""
+
+
+class AuthError(Exception):
+    """Raised when authentication fails."""
+
+
+class UserError(Exception):
+    """Error raised when user operations fail."""
+
+    pass
+
+
+class AuditError(Exception):
+    """Error raised when audit log operations fail."""
+
+    pass

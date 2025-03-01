@@ -20,14 +20,6 @@ class Environment(StrEnum):
     PRODUCTION = "production"
 
 
-class LogLevel(StrEnum):
-    DEBUG = "DEBUG"
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-    CRITICAL = "CRITICAL"
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -45,9 +37,6 @@ class Settings(BaseSettings):
     # Application settings
     FRONTEND_URL: AnyHttpUrl = AnyHttpUrl("http://localhost:3000")
     ENVIRONMENT: Environment = Environment.DEVELOPMENT
-
-
-    LOG_LEVEL: LogLevel = LogLevel.INFO
 
     # Security settings
     JWT_SECRET: SecretStr
@@ -98,11 +87,6 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_environment(cls, v: str) -> str:
         return v.lower() if isinstance(v, str) else v
-
-    @field_validator("LOG_LEVEL", mode="before")
-    @classmethod
-    def normalize_log_level(cls, v: str) -> str:
-        return v.upper() if isinstance(v, str) else v
 
 
 @lru_cache
