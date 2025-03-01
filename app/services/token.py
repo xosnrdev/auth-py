@@ -1,4 +1,4 @@
-"""JWT token service implementing OAuth2 and JWT standards."""
+"""Token service implementing OAuth2 and JWT standards."""
 
 import logging
 from datetime import UTC, datetime, timedelta
@@ -16,6 +16,7 @@ from app.db.redis import redis
 
 logger = logging.getLogger(__name__)
 
+# Constants
 ALGORITHM: Final[str] = "HS256"
 TOKEN_PREFIX: Final[str] = "token:"
 BEARER_FORMAT: Final[str] = "bearer"
