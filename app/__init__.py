@@ -1,1 +1,1 @@
-"""Application package initialization."""
+"""Application-level module initialization."""

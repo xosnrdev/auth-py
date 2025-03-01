@@ -1,4 +1,4 @@
-"""JWT token service implementing OAuth2 and JWT standards."""
+"""Token service for managing access and refresh tokens."""
 
 import logging
 from datetime import UTC, datetime, timedelta
@@ -12,16 +12,17 @@ from pydantic import BaseModel, Field, field_validator
 from redis.asyncio.client import Redis
 
 from app.core.config import settings
-from app.db.redis import redis
+from app.core.database import redis
 
 logger = logging.getLogger(__name__)
 
 ALGORITHM: Final[str] = "HS256"
+TOKEN_TYPE: Final[str] = "bearer"
+REFRESH_TOKEN_KEY_PREFIX: Final[str] = "refresh_token:"
+REVOKED_TOKEN_KEY_PREFIX: Final[str] = "revoked_token:"
+
 TOKEN_PREFIX: Final[str] = "token:"
 BEARER_FORMAT: Final[str] = "bearer"
-
-ACCESS_TOKEN_EXPIRES: Final[int] = settings.JWT_ACCESS_TOKEN_EXPIRES_SECS
-REFRESH_TOKEN_EXPIRES: Final[int] = settings.JWT_REFRESH_TOKEN_EXPIRES_SECS
 COOKIE_MAX_AGE: Final[int] = settings.COOKIE_MAX_AGE_SECS
 
 TOKEN_KEY_PATTERN: Final[str] = TOKEN_PREFIX + "*"
@@ -32,12 +33,14 @@ BLACKLIST_KEY_PATTERN: Final[str] = BLACKLIST_PREFIX + "*"
 
 class TokenType(str, Enum):
     """Token types following OAuth2 specification."""
+
     ACCESS = "access"
     REFRESH = "refresh"
 
 
 class TokenResponse(TypedDict):
     """OAuth2 token response format (RFC 6749)."""
+
     access_token: str
     refresh_token: str | None
     token_type: str
@@ -46,6 +49,7 @@ class TokenResponse(TypedDict):
 
 class TokenPayload(BaseModel):
     """JWT token payload with validation."""
+
     sub: str = Field(min_length=32, max_length=36)
     exp: datetime
     iat: datetime
@@ -69,6 +73,7 @@ class TokenMetadata(TypedDict):
     - Audit logging
     - Token revocation
     """
+
     user_id: str
     user_agent: str
     ip_address: str
@@ -107,8 +112,7 @@ class TokenService:
                 samesite="lax",
                 max_age=COOKIE_MAX_AGE,
                 expires=int(
-                    (datetime.now(UTC) + timedelta(seconds=COOKIE_MAX_AGE))
-                    .timestamp()
+                    (datetime.now(UTC) + timedelta(seconds=COOKIE_MAX_AGE)).timestamp()
                 ),
             )
             return None
@@ -118,13 +122,13 @@ class TokenService:
             access_token=access_token,
             refresh_token=refresh_token,
             token_type=BEARER_FORMAT,
-            expires_in=ACCESS_TOKEN_EXPIRES,
+            expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
         )
 
     async def create_access_token(self, user_id: UUID) -> str:
         """Create short-lived access token."""
         now = datetime.now(UTC)
-        expires = now + timedelta(seconds=ACCESS_TOKEN_EXPIRES)
+        expires = now + timedelta(seconds=settings.JWT_ACCESS_TOKEN_TTL_SECS)
         token_id = uuid4().hex
 
         payload = TokenPayload(
@@ -149,7 +153,7 @@ class TokenService:
     ) -> str:
         """Create long-lived refresh token."""
         now = datetime.now(UTC)
-        expires = now + timedelta(seconds=REFRESH_TOKEN_EXPIRES)
+        expires = now + timedelta(seconds=settings.JWT_REFRESH_TOKEN_TTL_SECS)
         token_id = uuid4().hex
 
         payload = TokenPayload(
@@ -244,7 +248,9 @@ class TokenService:
         redis_client = Redis(connection_pool=redis.connection_pool)
         try:
             await cast(Any, redis_client.hmset(key, metadata))
-            await cast(Any, redis_client.expire(key, REFRESH_TOKEN_EXPIRES))
+            await cast(
+                Any, redis_client.expire(key, settings.JWT_REFRESH_TOKEN_TTL_SECS)
+            )
         except Exception as e:
             logger.error("Failed to store token metadata: %s", str(e))
 
@@ -320,7 +326,6 @@ class TokenService:
             logger.error("Failed to revoke user tokens: %s", str(e))
 
 
-# Global token service instance
 token_service = TokenService()
 
 __all__ = [

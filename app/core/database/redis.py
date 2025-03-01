@@ -1,8 +1,8 @@
 """Redis connection pool with secure defaults."""
 
-from typing import Final, cast
+from typing import Final
 
-from redis.asyncio import Redis, from_url
+from redis.asyncio import from_url
 from redis.asyncio.connection import ConnectionPool
 from redis.exceptions import ConnectionError, RedisError
 
@@ -13,18 +13,15 @@ POOL_TIMEOUT: Final[int] = 30
 HEALTH_CHECK_INTERVAL: Final[int] = 30
 ENCODING: Final[str] = "utf-8"
 
-redis: Redis = cast(
-    Redis,
-    from_url(  # type: ignore[no-untyped-call]
-        url=settings.REDIS_URI.unicode_string(),
-        encoding=ENCODING,
-        decode_responses=True,
-        max_connections=POOL_SIZE,
-        socket_timeout=POOL_TIMEOUT,
-        socket_keepalive=True,
-        health_check_interval=HEALTH_CHECK_INTERVAL,
-        retry_on_timeout=True
-    ),
+redis = from_url(  # type: ignore[no-untyped-call]
+    url=settings.REDIS_URI.unicode_string(),
+    encoding=ENCODING,
+    decode_responses=True,
+    max_connections=POOL_SIZE,
+    socket_timeout=POOL_TIMEOUT,
+    socket_keepalive=True,
+    health_check_interval=HEALTH_CHECK_INTERVAL,
+    retry_on_timeout=True,
 )
 
 

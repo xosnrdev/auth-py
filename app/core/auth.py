@@ -1,75 +1,65 @@
 """Authentication utilities and decorators."""
 
 from collections.abc import Awaitable, Callable
-from enum import Enum
+from enum import Enum, auto
 from functools import wraps
-from typing import Annotated, ParamSpec, TypeVar
+from typing import ParamSpec, TypeVar
 
-from fastapi import Depends, HTTPException, status
+from fastapi import HTTPException, status
 
-from app.api.v1.dependencies import get_current_user
 from app.models import User
 
 P = ParamSpec("P")
 T = TypeVar("T")
 
 
-class RequireMode(str, Enum):
-    """Mode for role requirement checking.
+class RequireMode(Enum):
+    """Role requirement mode."""
 
-    Modes:
-        ANY: User must have any of the required roles
-        ALL: User must have all required roles
-    """
-
-    ANY = "any"
-    ALL = "all"
+    ANY = auto()
+    ALL = auto()
 
 
-def requires(
-    *roles: str,
+def check_roles(
+    required_roles: list[str],
+    *,
     mode: RequireMode = RequireMode.ANY,
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
-    """Decorator for requiring specific roles to access a route.
+    """Check if user has required roles.
 
     Args:
-        *roles: Required roles
-        mode: How to check roles (any or all)
+        required_roles: List of required roles
+        mode: Role requirement mode (ANY or ALL)
 
     Returns:
-        Callable: Decorated function
-
-    Example:
-        @app.get("/admin")
-        @requires("admin")
-        async def admin_route():
-            return {"message": "Admin only"}
-
-        @app.get("/super-admin")
-        @requires("admin", "super", mode=RequireMode.ALL)
-        async def super_admin_route():
-            return {"message": "Super admin only"}
+        Decorator function
     """
 
-    def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+    def decorator(
+        func: Callable[P, Awaitable[T]],
+    ) -> Callable[P, Awaitable[T]]:
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            # Get current user from context
-            user = kwargs.get("current_user")
-            if not user or not isinstance(user, User):
+            # Get current user from kwargs
+            current_user = None
+            for value in kwargs.values():
+                if isinstance(value, User):
+                    current_user = value
+                    break
+
+            if not current_user:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Not authenticated",
+                    detail="Authentication required",
                 )
 
-            # Check roles based on mode
-            has_permission = (
-                user.has_any_role(list(roles))
-                if mode == RequireMode.ANY
-                else user.has_all_roles(list(roles))
-            )
+            # Check roles
+            if mode == RequireMode.ALL:
+                has_roles = all(role in current_user.roles for role in required_roles)
+            else:
+                has_roles = any(role in current_user.roles for role in required_roles)
 
-            if not has_permission:
+            if not has_roles:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Insufficient permissions",
@@ -82,57 +72,5 @@ def requires(
     return decorator
 
 
-def check_roles(
-    roles: list[str],
-    mode: RequireMode = RequireMode.ANY,
-) -> Callable[[User], bool]:
-    """Create a role checker dependency.
-
-    Args:
-        roles: Required roles
-        mode: How to check roles (any or all)
-
-    Returns:
-        Callable: Role checker function
-
-    Example:
-        @app.get("/admin")
-        async def admin_route(
-            _: bool = Depends(check_roles(["admin"])),
-        ):
-            return {"message": "Admin only"}
-    """
-
-    def role_checker(user: Annotated[User, Depends(get_current_user)]) -> bool:
-        """Check if user has required roles.
-
-        Args:
-            user: Current authenticated user
-
-        Returns:
-            bool: True if user has required roles
-
-        Raises:
-            HTTPException: If user lacks required roles
-        """
-        has_permission = (
-            user.has_any_role(roles)
-            if mode == RequireMode.ANY
-            else user.has_all_roles(roles)
-        )
-
-        if not has_permission:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions",
-            )
-
-        return True
-
-    return role_checker
-
-
-requires_admin = requires("admin")
-requires_super_admin = requires("admin", "super", mode=RequireMode.ALL)
-check_admin = check_roles(["admin"])
-check_super_admin = check_roles(["admin", "super"], mode=RequireMode.ALL)
+requires_admin = check_roles(["admin"])
+requires_super_admin = check_roles(["super_admin"])
