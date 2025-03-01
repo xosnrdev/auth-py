@@ -77,7 +77,7 @@ async def login(
         access_token=cast(dict[str, str], tokens)["access_token"],
         refresh_token=cast(dict[str, str], tokens)["refresh_token"],
         token_type="bearer",
-        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRES_SECS,
+        expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
     )
 
 
@@ -140,14 +140,14 @@ async def refresh_token(
                 access_token=cast(dict[str, str], tokens)["access_token"],
                 refresh_token=cast(dict[str, str], tokens)["refresh_token"],
                 token_type="bearer",
-                expires_in=settings.JWT_ACCESS_TOKEN_EXPIRES_SECS,
+                expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
             )
         else:
             return TokenResponse(
                 access_token=cast(dict[str, str], tokens)["access_token"],
                 refresh_token=None,
                 token_type="bearer",
-                expires_in=settings.JWT_ACCESS_TOKEN_EXPIRES_SECS,
+                expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
             )
 
     except JWTError as e:
@@ -258,7 +258,7 @@ async def request_password_reset(
         return {"message": "If the account exists, a password reset email has been sent"}
 
     reset_token = token_hex(settings.VERIFICATION_CODE_LENGTH)
-    reset_expires = datetime.now(UTC) + timedelta(seconds=settings.VERIFICATION_CODE_EXPIRES_SECS)
+    reset_expires = datetime.now(UTC) + timedelta(seconds=settings.VERIFICATION_CODE_TTL_SECS)
 
     user.reset_token = reset_token
     user.reset_token_expires_at = reset_expires

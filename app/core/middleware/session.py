@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.core.config import settings
+from app.core.config import Environment, settings
 
 logger = logging.getLogger(__name__)
 
@@ -24,5 +24,5 @@ def setup_session_middleware(app: FastAPI, secret_key: str) -> None:
         session_cookie="auth_session",
         max_age=settings.COOKIE_MAX_AGE_SECS,
         same_site="lax",
-        https_only=not settings.DEBUG,
+        https_only=settings.ENVIRONMENT == Environment.PRODUCTION,
     )

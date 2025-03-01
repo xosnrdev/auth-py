@@ -20,8 +20,6 @@ class CustomOAuth(OAuth):
         logger.debug("Validating state - Request: %s, Session: %s", state, session_state)
         return state == session_state
 
-oauth: OAuth = CustomOAuth()  # type: ignore[no-untyped-call]
-
 class UserInfo(TypedDict):
     """Common user info structure following OpenID Connect."""
     provider: str
@@ -32,32 +30,49 @@ class UserInfo(TypedDict):
     picture: str | None
     locale: str | None
 
-oauth.register(
-    name='google',
-    client_id=settings.GOOGLE_CLIENT_ID,
-    client_secret=settings.GOOGLE_CLIENT_SECRET.get_secret_value(),
-    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
-    client_kwargs={
-        'scope': 'openid email profile',
-        'code_challenge_method': 'S256',
-        'response_type': 'code',
-        'response_mode': 'query',
-        'prompt': 'select_account'
-    }
-)
+oauth: OAuth = CustomOAuth()  # type: ignore[no-untyped-call]
 
-oauth.register(
-    name='apple',
-    client_id=settings.APPLE_CLIENT_ID,
-    client_secret=settings.APPLE_CLIENT_SECRET.get_secret_value(),
-    authorize_url='https://appleid.apple.com/auth/authorize',
-    token_url='https://appleid.apple.com/auth/token',
-    client_kwargs={
-        'scope': 'openid email name',
-        'code_challenge_method': 'S256',
-        'response_mode': 'form_post'
-    }
-)
+# Register providers only if credentials are configured
+if settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET:
+    oauth.register(
+        name='google',
+        client_id=settings.GOOGLE_CLIENT_ID,
+        client_secret=settings.GOOGLE_CLIENT_SECRET.get_secret_value(),
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+        client_kwargs={
+            'scope': 'openid email profile',
+            'code_challenge_method': 'S256',
+            'response_type': 'code',
+            'response_mode': 'query',
+            'prompt': 'select_account'
+        }
+    )
+    logger.info("Google OAuth provider registered")
+else:
+    logger.warning("Google OAuth provider not configured - missing credentials")
+
+if (settings.APPLE_CLIENT_ID and settings.APPLE_CLIENT_SECRET and
+    settings.APPLE_TEAM_ID and settings.APPLE_KEY_ID):
+    oauth.register(
+        name='apple',
+        client_id=settings.APPLE_CLIENT_ID,
+        client_secret=settings.APPLE_CLIENT_SECRET.get_secret_value(),
+        authorize_url='https://appleid.apple.com/auth/authorize',
+        token_url='https://appleid.apple.com/auth/token',
+        client_kwargs={
+            'scope': 'openid email name',
+            'code_challenge_method': 'S256',
+            'response_mode': 'form_post'
+        }
+    )
+    logger.info("Apple OAuth provider registered")
+else:
+    logger.warning("Apple OAuth provider not configured - missing credentials")
+
+def is_provider_configured(provider: str) -> bool:
+    """Check if an OAuth provider is configured and available."""
+    client = getattr(oauth, provider, None)
+    return client is not None
 
 async def require_user_info(
     request: Request,
@@ -65,10 +80,13 @@ async def require_user_info(
 ) -> UserInfo:
     """Get validated user info from OAuth provider."""
     try:
-        client = getattr(oauth, provider, None)
-        if not client:
-            raise ValueError(f"Unknown provider: {provider}")
+        if not is_provider_configured(provider):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail=f"OAuth provider '{provider}' is not configured"
+            )
 
+        client = getattr(oauth, provider)
         logger.debug(
             "OAuth callback received - URL: %s, Query Params: %s, Session: %s",
             str(request.url),

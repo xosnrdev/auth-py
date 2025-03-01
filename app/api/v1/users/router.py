@@ -40,7 +40,7 @@ async def register(
 
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
         verification_expires = datetime.now(UTC) + timedelta(
-            seconds=settings.VERIFICATION_CODE_EXPIRES_SECS
+            seconds=settings.VERIFICATION_CODE_TTL_SECS
         )
 
         user = User(
@@ -209,7 +209,7 @@ async def resend_verification(
 
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
         verification_expires = datetime.now(UTC) + timedelta(
-            seconds=settings.VERIFICATION_CODE_EXPIRES_SECS
+            seconds=settings.VERIFICATION_CODE_TTL_SECS
         )
 
         current_user.verification_code = verification_code
@@ -272,7 +272,7 @@ async def resend_verification_public(
     if user:
         verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
         verification_expires = datetime.now(UTC) + timedelta(
-            seconds=settings.VERIFICATION_CODE_EXPIRES_SECS
+            seconds=settings.VERIFICATION_CODE_TTL_SECS
         )
 
         user.verification_code = verification_code
@@ -337,7 +337,7 @@ async def request_email_change(
 
     verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
     verification_expires = datetime.now(UTC) + timedelta(
-        seconds=settings.VERIFICATION_CODE_EXPIRES_SECS
+        seconds=settings.VERIFICATION_CODE_TTL_SECS
     )
 
     current_user.verification_code = verification_code

@@ -43,9 +43,6 @@ class EmailService:
             assert settings.SMTP_PASSWORD, "SMTP_PASSWORD must be set"
             assert settings.SMTP_FROM_EMAIL, "SMTP_FROM_EMAIL must be set"
             assert settings.SMTP_FROM_NAME, "SMTP_FROM_NAME must be set"
-            assert settings.APP_URL.startswith("https://") or settings.APP_URL.startswith("http://localhost"), (
-                "APP_URL must use HTTPS in production"
-            )
 
             self.host: str = settings.SMTP_HOST
             self.port: int = settings.SMTP_PORT
@@ -146,21 +143,21 @@ class EmailService:
         """Send email verification link."""
         assert verification_code, "Verification code required"
         verification_url = urljoin(
-            settings.APP_URL,
-            f"{settings.VERIFICATION_URL_PATH}?code={verification_code}",
+            settings.FRONTEND_URL.unicode_string(),
+            f"{settings.VERIFICATION_URI}?code={verification_code}",
         )
 
         text_content = (
             f"Please verify your email:\n"
             f"{verification_url}\n\n"
-            f"Link expires in {settings.VERIFICATION_CODE_EXPIRES_SECS} hours.\n\n"
+            f"Link expires in {settings.VERIFICATION_CODE_TTL_SECS} hours.\n\n"
             f"If you didn't request this, ignore this email."
         )
 
         html_content = (
             f"<h2>Verify Your Email</h2>"
             f"<p><a href='{verification_url}'>Click to Verify Email</a></p>"
-            f"<p>Link expires in {settings.VERIFICATION_CODE_EXPIRES_SECS} hours.</p>"
+            f"<p>Link expires in {settings.VERIFICATION_CODE_TTL_SECS} hours.</p>"
             f"<p>If you didn't request this, ignore this email.</p>"
         )
 
@@ -180,21 +177,21 @@ class EmailService:
         assert reset_token, "Reset token required"
 
         reset_url = urljoin(
-            settings.APP_URL,
-            f"{settings.PASSWORD_RESET_URL_PATH}?token={reset_token}",
+            settings.FRONTEND_URL.unicode_string(),
+            f"{settings.PASSWORD_RESET_URI}?token={reset_token}",
         )
 
         text_content = (
             f"Reset your password:\n"
             f"{reset_url}\n\n"
-            f"Link expires in {settings.VERIFICATION_CODE_EXPIRES_SECS} hours.\n\n"
+            f"Link expires in {settings.VERIFICATION_CODE_TTL_SECS} hours.\n\n"
             f"If you didn't request this, change your password immediately."
         )
 
         html_content = (
             f"<h2>Reset Your Password</h2>"
             f"<p><a href='{reset_url}'>Click to Reset Password</a></p>"
-            f"<p>Link expires in {settings.VERIFICATION_CODE_EXPIRES_SECS} hours.</p>"
+            f"<p>Link expires in {settings.VERIFICATION_CODE_TTL_SECS} hours.</p>"
             f"<p>If you didn't request this, change your password immediately.</p>"
         )
 

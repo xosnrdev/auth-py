@@ -93,16 +93,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 def setup_cors(app: FastAPI) -> None:
     """Configure CORS middleware with secure defaults."""
     assert settings.CORS_ORIGINS, "CORS origins must be configured"
-    assert all(origin.startswith("https://") for origin in settings.CORS_ORIGINS), (
-        "CORS origins must use HTTPS in production"
-    )
     assert settings.CORS_ALLOW_METHODS, "CORS methods must be configured"
     assert settings.CORS_ALLOW_HEADERS, "CORS headers must be configured"
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
-        allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
+        allow_origins=[origin.unicode_string() for origin in settings.CORS_ORIGINS],
+        allow_credentials=True,
         allow_methods=settings.CORS_ALLOW_METHODS,
         allow_headers=settings.CORS_ALLOW_HEADERS,
         max_age=CORS_MAX_AGE,

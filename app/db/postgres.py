@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.core.config import settings
+from app.core.config import Environment, settings
 
 POOL_SIZE: Final[int] = 10
 MAX_OVERFLOW: Final[int] = 20
@@ -18,7 +18,7 @@ POOL_TIMEOUT: Final[int] = 30
 
 engine: AsyncEngine = create_async_engine(
     settings.DATABASE_URI.unicode_string(),
-    echo=settings.DEBUG,
+    echo=settings.ENVIRONMENT == Environment.DEVELOPMENT,
     pool_pre_ping=True,
     pool_size=POOL_SIZE,
     max_overflow=MAX_OVERFLOW,
