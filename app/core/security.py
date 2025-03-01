@@ -27,7 +27,9 @@ def get_password_hash(password: str) -> str:
     try:
         password_bytes = password.encode(ENCODING)
         if len(password_bytes) > MAX_PASSWORD_BYTES:
-            raise ValueError(f"Password exceeds {MAX_PASSWORD_BYTES} bytes when encoded")
+            raise ValueError(
+                f"Password exceeds {MAX_PASSWORD_BYTES} bytes when encoded"
+            )
 
         salt = _gensalt(rounds=WORK_FACTOR)
         hash_bytes = _hashpw(password_bytes, salt)

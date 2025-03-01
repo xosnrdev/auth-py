@@ -128,11 +128,7 @@ class EmailRequest(BaseModel):
     """Email-only request validation."""
 
     model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "email": "user@example.com"
-            }
-        },
+        json_schema_extra={"example": {"email": "user@example.com"}},
         populate_by_name=True,
     )
 
@@ -147,11 +143,7 @@ class PasswordResetRequest(BaseModel):
     """Password reset request validation."""
 
     model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "email": "user@example.com"
-            }
-        },
+        json_schema_extra={"example": {"email": "user@example.com"}},
         populate_by_name=True,
     )
 
@@ -166,10 +158,7 @@ class PasswordResetVerify(BaseModel):
 
     model_config = ConfigDict(
         json_schema_extra={
-            "example": {
-                "token": "abc123...",
-                "password": "newP@ssw0rd"
-            }
+            "example": {"token": "abc123...", "password": "newP@ssw0rd"}
         },
         populate_by_name=True,
     )

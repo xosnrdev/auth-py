@@ -24,13 +24,17 @@ def get_client_ip(request: Request) -> str:
 
     if request.client and request.client.host:
         client_ip = request.client.host
-        assert len(client_ip) <= MAX_IP_LENGTH, f"Client IP exceeds maximum length of {MAX_IP_LENGTH}"
+        assert len(client_ip) <= MAX_IP_LENGTH, (
+            f"Client IP exceeds maximum length of {MAX_IP_LENGTH}"
+        )
         if is_valid_ip(client_ip):
             return client_ip
 
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
-        assert len(forwarded) <= MAX_IP_LENGTH * 5, "X-Forwarded-For header exceeds maximum length"
+        assert len(forwarded) <= MAX_IP_LENGTH * 5, (
+            "X-Forwarded-For header exceeds maximum length"
+        )
         first_ip = forwarded.split(",")[0].strip()
         if is_valid_ip(first_ip):
             return first_ip
