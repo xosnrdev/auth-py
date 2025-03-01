@@ -4,13 +4,14 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.security import HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 
 from app.core.dependencies import (
     AuditRepo,
     CurrentUser,
     Token,
     UserRepo,
+    bearer_scheme,
 )
 from app.core.errors import AuthError
 from app.schemas import PasswordResetRequest, PasswordResetVerify
@@ -111,9 +112,9 @@ async def logout(
     request: Request,
     response: Response,
     current_user: CurrentUser,
-    token: Token,
     audit_repo: AuditRepo,
     user_repo: UserRepo,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> None:
     """Logout user and revoke current session following RFC 7009.
 
@@ -121,16 +122,18 @@ async def logout(
         request: FastAPI request
         response: FastAPI response
         current_user: Current authenticated user
-        token: Access token
         audit_repo: Audit log repository
         user_repo: User repository
+        credentials: Bearer token credentials from authorization header
 
     Raises:
         HTTPException: If logout fails
     """
     try:
         auth_service = AuthService(user_repo, audit_repo)
-        await auth_service.logout(request, response, current_user, token)
+        await auth_service.logout(
+            request, response, current_user, credentials.credentials
+        )
     except AuthError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
