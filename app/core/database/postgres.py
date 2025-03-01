@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import Environment, settings
+from app.models.base import Base
 
 POOL_SIZE: Final[int] = 10
 MAX_OVERFLOW: Final[int] = 20
@@ -31,6 +32,15 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
     autoflush=False,
 )
+
+
+async def init_database() -> None:
+    """Initialize database and create all tables."""
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize database: {e}") from e
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:

@@ -11,7 +11,7 @@ from fastapi_limiter import FastAPILimiter
 from app.api.system import router as system_router
 from app.api.v1 import router as api_router
 from app.core.config import Environment, settings
-from app.core.database import close_redis, engine, init_redis, redis
+from app.core.database import close_redis, engine, init_database, init_redis, redis
 from app.core.errors import http_error_handler, validation_error_handler
 from app.core.middleware.audit import AuditMiddleware
 from app.core.middleware.context import RequestContextMiddleware
@@ -35,7 +35,11 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
         None
     """
     try:
-        # Startup
+        # Initialize database
+        await init_database()
+        logger.info("Database initialized")
+
+        # Initialize Redis
         await init_redis()
         logger.info("Redis connection pool initialized")
 

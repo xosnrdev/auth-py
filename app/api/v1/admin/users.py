@@ -18,6 +18,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/users", tags=["admin"])
 
 
+@router.get("/roles", response_model=list[str])
+@requires_admin
+async def list_roles(
+    _: CurrentUser,
+) -> list[str]:
+    """List available roles.
+
+    Args:
+        _: Current authenticated user (unused)
+
+    Returns:
+        List of available roles
+    """
+    return ["user", "admin", "super_admin"]
+
+
 @router.get("", response_model=list[UserResponse])
 @requires_admin
 async def list_users(
@@ -316,19 +332,3 @@ async def remove_role(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to remove role",
         )
-
-
-@router.get("/roles", response_model=list[str])
-@requires_admin
-async def list_roles(
-    _: CurrentUser,
-) -> list[str]:
-    """List available roles.
-
-    Args:
-        _: Current authenticated user (unused)
-
-    Returns:
-        List of available roles
-    """
-    return ["user", "admin", "super"]
