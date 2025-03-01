@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.audit import AuditLog
 from app.repositories.base import BaseRepository
 
-# Constants
 MAX_LOGS_PER_PAGE: Final[int] = 100
 DEFAULT_LOGS_PER_PAGE: Final[int] = 20
 MAX_DAYS_RANGE: Final[int] = 90

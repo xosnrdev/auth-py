@@ -11,7 +11,6 @@ from app.core.errors import DatabaseError, NotFoundError
 from app.models.user import User
 from app.repositories.base import BaseRepository
 
-# Constants
 MAX_USERS_PER_PAGE: Final[int] = 50
 DEFAULT_USERS_PER_PAGE: Final[int] = 20
 
@@ -174,10 +173,7 @@ class UserRepository(BaseRepository[User]):
         )
 
         query = (
-            select(User)
-            .where(User.roles.contains([role]))
-            .offset(offset)
-            .limit(limit)
+            select(User).where(User.roles.contains([role])).offset(offset).limit(limit)
         )
         result = await self._session.execute(query)
         return list(result.scalars().all())
@@ -216,16 +212,18 @@ class UserRepository(BaseRepository[User]):
         assert social_id, "Social ID cannot be empty"
 
         # Create user with social ID
-        return await self.create({
-            "email": email,
-            "is_active": True,
-            "is_verified": is_verified,
-            "password_hash": "",  # Empty for social users
-            "name": name,
-            "picture": picture,
-            "locale": locale,
-            "social_id": {provider: social_id},
-        })
+        return await self.create(
+            {
+                "email": email,
+                "is_active": True,
+                "is_verified": is_verified,
+                "password_hash": "",
+                "name": name,
+                "picture": picture,
+                "locale": locale,
+                "social_id": {provider: social_id},
+            }
+        )
 
     async def link_social_account(
         self,
@@ -275,17 +273,25 @@ class UserRepository(BaseRepository[User]):
 
         try:
             # Count users with Google social ID
-            google_count = await self._session.scalar(
-                select(func.count(User.id))
-                .where(User.social_id["google"].isnot(None))
-            ) or 0
+            google_count = (
+                await self._session.scalar(
+                    select(func.count(User.id)).where(
+                        User.social_id["google"].isnot(None)
+                    )
+                )
+                or 0
+            )
             stats["google_users"] = google_count
 
             # Count users with Apple social ID
-            apple_count = await self._session.scalar(
-                select(func.count(User.id))
-                .where(User.social_id["apple"].isnot(None))
-            ) or 0
+            apple_count = (
+                await self._session.scalar(
+                    select(func.count(User.id)).where(
+                        User.social_id["apple"].isnot(None)
+                    )
+                )
+                or 0
+            )
             stats["apple_users"] = apple_count
 
             return stats

@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,10 +15,8 @@ from app.core.errors import (
 )
 from app.models.base import Base
 
-# Type variable for generic repository
 ModelType = TypeVar("ModelType", bound=Base)
 
-# Constants for query limits
 MAX_LIMIT: int = 100
 DEFAULT_LIMIT: int = 20
 
@@ -203,6 +201,35 @@ class BaseRepository(Generic[ModelType]):
         try:
             instance = await self._session.get(self._model, id)
             return instance is not None
+
+        except SQLAlchemyError as e:
+            raise DatabaseError(str(e)) from e
+
+    async def count(self, filters: dict[str, Any] | None = None) -> int:
+        """Count records with optional filters.
+
+        Args:
+            filters: Optional dictionary of filters
+
+        Returns:
+            Number of records
+
+        Raises:
+            DatabaseError: For database errors
+        """
+        try:
+            query = select(func.count()).select_from(self._model)
+
+            if filters:
+                for key, value in filters.items():
+                    if key.endswith("_gt"):
+                        field = key[:-3]  # Remove _gt suffix
+                        query = query.where(getattr(self._model, field) > value)
+                    else:
+                        query = query.where(getattr(self._model, key) == value)
+
+            result = await self._session.execute(query)
+            return result.scalar() or 0
 
         except SQLAlchemyError as e:
             raise DatabaseError(str(e)) from e
