@@ -5,8 +5,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.api.v1.dependencies import AuditRepo, CurrentUser, UserRepo
 from app.core.auth import requires_admin, requires_super_admin
+from app.core.dependencies import AuditRepo, CurrentUser, UserRepo
 from app.core.errors import NotFoundError
 from app.core.security import get_password_hash
 from app.models import User
@@ -102,26 +102,32 @@ async def update_user(
         # Prepare update data
         update_data = user_update.model_dump(exclude_unset=True)
         if "password" in update_data:
-            update_data["password_hash"] = get_password_hash(update_data.pop("password"))
+            update_data["password_hash"] = get_password_hash(
+                update_data.pop("password")
+            )
 
         # Handle verification status
         if user_update.is_verified:
-            update_data.update({
-                "verification_code": None,
-                "verification_code_expires_at": None,
-            })
+            update_data.update(
+                {
+                    "verification_code": None,
+                    "verification_code_expires_at": None,
+                }
+            )
 
         # Update user
         user = await user_repo.update(user_id, update_data)
 
         # Log update
-        await audit_repo.create({
-            "user_id": current_user.id,
-            "action": "update_user",
-            "ip_address": get_client_ip(request),
-            "user_agent": request.headers.get("user-agent", ""),
-            "details": f"Updated user {user.email}",
-        })
+        await audit_repo.create(
+            {
+                "user_id": current_user.id,
+                "action": "update_user",
+                "ip_address": get_client_ip(request),
+                "user_agent": request.headers.get("user-agent", ""),
+                "details": f"Updated user {user.email}",
+            }
+        )
 
         return user
 
@@ -164,13 +170,15 @@ async def delete_user(
         user = await user_repo.get_by_id(user_id)
 
         # Log deletion first in case user deletion fails
-        await audit_repo.create({
-            "user_id": current_user.id,
-            "action": "delete_user",
-            "ip_address": get_client_ip(request),
-            "user_agent": request.headers.get("user-agent", ""),
-            "details": f"Deleted user {user.email}",
-        })
+        await audit_repo.create(
+            {
+                "user_id": current_user.id,
+                "action": "delete_user",
+                "ip_address": get_client_ip(request),
+                "user_agent": request.headers.get("user-agent", ""),
+                "details": f"Deleted user {user.email}",
+            }
+        )
 
         # Delete user
         await user_repo.delete(user_id)
@@ -224,13 +232,15 @@ async def add_role(
             user = await user_repo.update(user_id, {"roles": roles})
 
             # Log role addition
-            await audit_repo.create({
-                "user_id": current_user.id,
-                "action": "add_role",
-                "ip_address": get_client_ip(request),
-                "user_agent": request.headers.get("user-agent", ""),
-                "details": f"Added role {role} to user {user.email}",
-            })
+            await audit_repo.create(
+                {
+                    "user_id": current_user.id,
+                    "action": "add_role",
+                    "ip_address": get_client_ip(request),
+                    "user_agent": request.headers.get("user-agent", ""),
+                    "details": f"Added role {role} to user {user.email}",
+                }
+            )
 
         return {"roles": user.roles}
 
@@ -283,13 +293,15 @@ async def remove_role(
             user = await user_repo.update(user_id, {"roles": roles})
 
             # Log role removal
-            await audit_repo.create({
-                "user_id": current_user.id,
-                "action": "remove_role",
-                "ip_address": get_client_ip(request),
-                "user_agent": request.headers.get("user-agent", ""),
-                "details": f"Removed role {role} from user {user.email}",
-            })
+            await audit_repo.create(
+                {
+                    "user_id": current_user.id,
+                    "action": "remove_role",
+                    "ip_address": get_client_ip(request),
+                    "user_agent": request.headers.get("user-agent", ""),
+                    "details": f"Removed role {role} from user {user.email}",
+                }
+            )
 
         return {"roles": user.roles}
 

@@ -1,15 +1,16 @@
 """Audit log endpoints for tracking user activity."""
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.api.v1.dependencies import AuditRepo, CurrentUser
 from app.core.auth import requires_admin
-from app.core.errors import NotFoundError
+from app.core.dependencies import AuditRepo, CurrentUser
+from app.core.errors import AuditError
 from app.models import AuditLog
 from app.schemas import AuditLogResponse
+from app.services import AuditService
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -40,22 +41,24 @@ async def list_audit_logs(
 
     Returns:
         List of audit logs
-    """
-    # If no filters are applied, use get_all
-    if not any([user_id, action, start_date, end_date]):
-        return await audit_repo.get_all(offset=skip, limit=limit)
 
-    # Apply filters in priority order
-    if user_id:
-        return await audit_repo.get_by_user(user_id, offset=skip, limit=limit)
-    elif action:
-        return await audit_repo.get_by_action(action, offset=skip, limit=limit)
-    else:
-        return await audit_repo.get_by_date_range(
-            start_date=start_date or datetime.now(UTC),
+    Raises:
+        HTTPException: If log retrieval fails
+    """
+    try:
+        audit_service = AuditService(audit_repo)
+        return await audit_service.get_logs(
+            user_id=user_id,
+            action=action,
+            start_date=start_date,
             end_date=end_date,
-            offset=skip,
+            skip=skip,
             limit=limit,
+        )
+    except AuditError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
         )
 
 
@@ -80,9 +83,10 @@ async def get_audit_log(
         HTTPException: If log not found
     """
     try:
-        return await audit_repo.get_by_id(log_id)
-    except NotFoundError:
+        audit_service = AuditService(audit_repo)
+        return await audit_service.get_log(log_id)
+    except AuditError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Audit log not found",
+            detail=str(e),
         )
