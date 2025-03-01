@@ -2,11 +2,14 @@
 
 import logging
 
-from fastapi import Request, Response
+from fastapi import Request, Response, status
+from fastapi.exceptions import HTTPException
+from fastapi.responses import JSONResponse
 from fastapi_limiter.depends import RateLimiter
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.core.config import settings
+from app.core.errors import ERROR_CODES, RATE_LIMIT_ERROR_TYPE, ProblemDetail
 from app.core.middleware.context import client_ip_ctx
 
 logger = logging.getLogger(__name__)
@@ -59,11 +62,38 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
 
             response = Response()
-
             await rate_limiter(request, response)
-
             return await call_next(request)
+
+        except HTTPException as e:
+            if e.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+                identifier = await get_identifier(request)
+                logger.info(
+                    "Rate limit exceeded for %s: %d requests per %d seconds",
+                    identifier,
+                    settings.RATE_LIMIT_REQUESTS,
+                    settings.RATE_LIMIT_WINDOW_SECS,
+                )
+
+                problem = ProblemDetail(
+                    type=RATE_LIMIT_ERROR_TYPE,
+                    title="Too Many Requests",
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Rate limit exceeded: {settings.RATE_LIMIT_REQUESTS} requests per {settings.RATE_LIMIT_WINDOW_SECS} seconds",
+                    instance=str(request.url),
+                    code=ERROR_CODES[status.HTTP_429_TOO_MANY_REQUESTS],
+                )
+
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content=problem.model_dump(exclude_none=True),
+                    headers={
+                        "Content-Type": "application/problem+json",
+                        "Retry-After": str(settings.RATE_LIMIT_WINDOW_SECS),
+                    },
+                )
+            raise
 
         except Exception as e:
             logger.error("Rate limiting failed: %s", str(e), exc_info=True)
-            return await call_next(request)
+            raise
