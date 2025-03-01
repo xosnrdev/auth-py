@@ -1,4 +1,4 @@
-"""FastAPI dependency injection utilities for authentication and database access."""
+"""Authentication dependency injection utilities."""
 
 import logging
 from typing import Annotated, Final
@@ -6,12 +6,11 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.dependencies.database import AuditRepo, UserRepo
 from app.core.errors import NotFoundError
-from app.db.postgres import get_db
 from app.models import User
-from app.repositories import AuditLogRepository, UserRepository
+from app.services import AuditService
 from app.services.token import TokenType, token_service
 from app.utils.request import get_client_ip
 
@@ -20,43 +19,13 @@ logger = logging.getLogger(__name__)
 MAX_TOKEN_LENGTH: Final[int] = 1024
 AUTH_SCHEME: Final[str] = "Bearer"
 
-DBSession = Annotated[AsyncSession, Depends(get_db)]
-Token = Annotated[str, Depends(HTTPBearer(scheme_name=AUTH_SCHEME))]
-
 bearer_scheme = HTTPBearer(
     auto_error=True,
     description="JWT Bearer token following RFC 6750",
     scheme_name=AUTH_SCHEME,
 )
 
-
-async def get_user_repository(db: DBSession) -> UserRepository:
-    """Get user repository instance.
-
-    Args:
-        db: Database session
-
-    Returns:
-        User repository instance
-    """
-    return UserRepository(db)
-
-
-async def get_audit_repository(db: DBSession) -> AuditLogRepository:
-    """Get audit log repository instance.
-
-    Args:
-        db: Database session
-
-    Returns:
-        Audit log repository instance
-    """
-    return AuditLogRepository(db)
-
-
-# Repository dependencies
-UserRepo = Annotated[UserRepository, Depends(get_user_repository)]
-AuditRepo = Annotated[AuditLogRepository, Depends(get_audit_repository)]
+Token = Annotated[str, Depends(HTTPBearer(scheme_name=AUTH_SCHEME))]
 
 
 async def get_current_user(
@@ -104,14 +73,14 @@ async def get_current_user(
                 detail="User account is inactive",
             )
 
-        # Log authentication
-        await audit_repo.create({
-            "user_id": user.id,
-            "action": "authenticate",
-            "ip_address": get_client_ip(request),
-            "user_agent": request.headers.get("user-agent", ""),
-            "details": "Token authentication successful",
-        })
+        # Log authentication using AuditService
+        audit_service = AuditService(audit_repo)
+        await audit_service.create_log(
+            request=request,
+            user_id=user.id,
+            action="authenticate",
+            details="Token authentication successful",
+        )
 
         return user
 
