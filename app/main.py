@@ -1,5 +1,5 @@
 """FastAPI application entry point."""
 
-from app.core.registrar import register_app
+from app.core.registrar import create_app
 
-app = register_app()
+app = create_app()
