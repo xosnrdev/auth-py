@@ -4,15 +4,14 @@ import logging
 from enum import Enum
 from typing import cast
 
-from fastapi import APIRouter, Request, Response
-from sqlalchemy import func, select
+from fastapi import APIRouter, HTTPException, Request, Response, status
 
-from app.api.v1.dependencies import DBSession
+from app.api.v1.dependencies import AuditRepo, UserRepo
 from app.core.auth import requires_admin
 from app.core.config import settings
-from app.core.jwt import TokenResponse, token_service
+from app.core.errors import DuplicateError, NotFoundError
 from app.core.oauth2 import AppleOAuthUserInfo, OAuthUserInfo, oauth
-from app.models import User
+from app.services.token import TokenResponse, token_service
 from app.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -45,46 +44,84 @@ async def google_login(request: Request) -> Response:
 @router.get("/google/callback")
 async def oauth_callback_google(
     request: Request,
-    db: DBSession,
+    user_repo: UserRepo,
+    audit_repo: AuditRepo,
     user_info: OAuthUserInfo,
 ) -> TokenResponse:
-    """Handle Google OAuth2 callback."""
-    # Find or create user
-    stmt = select(User).where(
-        User.email == user_info['email'],
-        User.is_active.is_(True),
-    )
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    """Handle Google OAuth2 callback.
 
-    if not user:
-        # Create new user
-        user = User(
-            email=user_info['email'],
-            is_active=True,
-            is_verified=user_info['email_verified'],
-            password_hash="",
-            social_id={
-                ProviderType.GOOGLE.value: user_info['sub']
-            }
+    Args:
+        request: FastAPI request
+        user_repo: User repository
+        audit_repo: Audit log repository
+        user_info: OAuth user info from Google
+
+    Returns:
+        Token response with access and refresh tokens
+
+    Raises:
+        HTTPException: If authentication fails
+    """
+    try:
+        # Try to find existing user
+        try:
+            user = await user_repo.get_by_email(user_info['email'])
+
+            # Link Google account if not already linked
+            if ProviderType.GOOGLE.value not in user.social_id:
+                user = await user_repo.link_social_account(
+                    user_id=user.id,
+                    provider=ProviderType.GOOGLE.value,
+                    social_id=user_info['sub'],
+                )
+
+        except NotFoundError:
+            # Create new user
+            user = await user_repo.create_social_user(
+                email=user_info['email'],
+                provider=ProviderType.GOOGLE.value,
+                social_id=user_info['sub'],
+                is_verified=user_info['email_verified'],
+                name=user_info.get('name'),
+                picture=user_info.get('picture'),
+                locale=user_info.get('locale'),
+            )
+
+        # Create tokens
+        tokens = await token_service.create_tokens(
+            user_id=user.id,
+            user_agent=request.headers.get("user-agent", ""),
+            ip_address=get_client_ip(request),
         )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-    else:
-        # Update social ID if not already set
-        if ProviderType.GOOGLE.value not in user.social_id:
-            user.social_id[ProviderType.GOOGLE.value] = user_info['sub']
-            await db.commit()
+        if not tokens:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create authentication tokens",
+            )
 
-    # Create tokens
-    tokens = await token_service.create_tokens(
-        user_id=user.id,
-        user_agent=request.headers.get("user-agent", ""),
-        ip_address=get_client_ip(request),
-    )
-    assert tokens is not None, "Token creation failed"
-    return tokens
+        # Log successful login
+        await audit_repo.create({
+            "user_id": user.id,
+            "action": "login_google",
+            "ip_address": get_client_ip(request),
+            "user_agent": request.headers.get("user-agent", ""),
+            "details": "Logged in with Google",
+        })
+
+        return tokens
+
+    except DuplicateError as e:
+        logger.error("Google OAuth callback failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error("Google OAuth callback failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authentication failed",
+        )
 
 
 @router.get("/apple/authorize")
@@ -98,42 +135,84 @@ async def apple_login(request: Request) -> Response:
 @router.post("/apple/callback")
 async def oauth_callback_apple(
     request: Request,
-    db: DBSession,
+    user_repo: UserRepo,
+    audit_repo: AuditRepo,
     user_info: AppleOAuthUserInfo,
 ) -> TokenResponse:
-    """Handle Apple OAuth2 callback."""
-    # Find or create user
-    stmt = select(User).where(
-        User.email == user_info['email'],
-        User.is_active.is_(True),
-    )
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    """Handle Apple OAuth2 callback.
 
-    if not user:
-        # Create new user
-        user = User(
-            email=user_info['email'],
-            is_active=True,
-            is_verified=user_info['email_verified'],
-            name=user_info.get('name'),
-            picture=user_info.get('picture'),
-            locale=user_info.get('locale'),
-            oauth_provider=user_info['provider'],
-            oauth_subject=user_info['sub'],
+    Args:
+        request: FastAPI request
+        user_repo: User repository
+        audit_repo: Audit log repository
+        user_info: OAuth user info from Apple
+
+    Returns:
+        Token response with access and refresh tokens
+
+    Raises:
+        HTTPException: If authentication fails
+    """
+    try:
+        # Try to find existing user
+        try:
+            user = await user_repo.get_by_email(user_info['email'])
+
+            # Link Apple account if not already linked
+            if ProviderType.APPLE.value not in user.social_id:
+                user = await user_repo.link_social_account(
+                    user_id=user.id,
+                    provider=ProviderType.APPLE.value,
+                    social_id=user_info['sub'],
+                )
+
+        except NotFoundError:
+            # Create new user
+            user = await user_repo.create_social_user(
+                email=user_info['email'],
+                provider=ProviderType.APPLE.value,
+                social_id=user_info['sub'],
+                is_verified=user_info['email_verified'],
+                name=user_info.get('name'),
+                picture=user_info.get('picture'),
+                locale=user_info.get('locale'),
+            )
+
+        # Create tokens
+        tokens = await token_service.create_tokens(
+            user_id=user.id,
+            user_agent=request.headers.get("user-agent", ""),
+            ip_address=get_client_ip(request),
         )
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
+        if not tokens:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create authentication tokens",
+            )
 
-    # Create tokens
-    tokens = await token_service.create_tokens(
-        user_id=user.id,
-        user_agent=request.headers.get("user-agent", ""),
-        ip_address=get_client_ip(request),
-    )
-    assert tokens is not None, "Token creation failed"
-    return tokens
+        # Log successful login
+        await audit_repo.create({
+            "user_id": user.id,
+            "action": "login_apple",
+            "ip_address": get_client_ip(request),
+            "user_agent": request.headers.get("user-agent", ""),
+            "details": "Logged in with Apple",
+        })
+
+        return tokens
+
+    except DuplicateError as e:
+        logger.error("Apple OAuth callback failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error("Apple OAuth callback failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Authentication failed",
+        )
 
 
 @router.get("/providers", response_model=list[str])
@@ -145,16 +224,25 @@ async def list_providers() -> list[str]:
 
 @router.get("/stats", response_model=dict[str, int])
 @requires_admin
-async def get_social_stats(db: DBSession) -> dict[str, int]:
-    """Get social login statistics for monitoring and analytics."""
-    google_count = await db.scalar(
-        select(func.count(User.id)).where(User.social_id[ProviderType.GOOGLE.value].isnot(None))
-    ) or 0
-    apple_count = await db.scalar(
-        select(func.count(User.id)).where(User.social_id[ProviderType.APPLE.value].isnot(None))
-    ) or 0
+async def get_social_stats(
+    user_repo: UserRepo,
+) -> dict[str, int]:
+    """Get social login statistics for monitoring and analytics.
 
-    return {
-        f"{ProviderType.GOOGLE.value}_users": google_count,
-        f"{ProviderType.APPLE.value}_users": apple_count,
-    }
+    Args:
+        user_repo: User repository
+
+    Returns:
+        Dictionary with provider statistics
+
+    Raises:
+        HTTPException: If stats retrieval fails
+    """
+    try:
+        return await user_repo.get_provider_stats()
+    except Exception as e:
+        logger.error("Failed to get social stats: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get social login statistics",
+        )
