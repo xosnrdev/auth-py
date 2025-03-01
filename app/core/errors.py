@@ -170,3 +170,34 @@ async def validation_error_handler(
             "Cache-Control": CACHE_CONTROL,
         },
     )
+
+
+class AppError(Exception):
+    """Base error class for application errors."""
+
+    def __init__(self, message: str, details: Any = None) -> None:
+        """Initialize error with message and optional details.
+
+        Args:
+            message: Error message
+            details: Additional error details
+        """
+        super().__init__(message)
+        self.message = message
+        self.details = details
+
+
+class RepositoryError(AppError):
+    """Base error class for repository layer errors."""
+
+
+class DatabaseError(RepositoryError):
+    """Error raised when a database operation fails."""
+
+
+class DuplicateError(DatabaseError):
+    """Error raised when a unique constraint is violated."""
+
+
+class NotFoundError(RepositoryError):
+    """Error raised when a requested resource is not found."""
