@@ -1,10 +1,11 @@
 """Social authentication endpoints following RFC 6749 (OAuth2)."""
 
 import logging
+import secrets
 from enum import Enum
-from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
+from starlette.responses import RedirectResponse
 
 from app.core.auth import requires_admin
 from app.core.dependencies import AuditRepo, UserRepo
@@ -31,12 +32,29 @@ class ProviderType(str, Enum):
 
 
 @router.get("/google/authorize")
-async def google_login(request: Request) -> Response:
+async def google_login(request: Request) -> RedirectResponse:
     """Start Google OAuth2 flow."""
-    redirect_uri = request.url_for("oauth_callback_google")
-    state = request.session.get("oauth_state", "")
-    response = await oauth.google.authorize_redirect(request, redirect_uri, state=state)
-    return cast(Response, response)
+    try:
+        # Generate a secure random state
+        state = secrets.token_urlsafe(32)
+        request.session["oauth_state"] = state
+
+        redirect_uri = request.url_for("oauth_callback_google")
+        response = await oauth.google.authorize_redirect(
+            request, redirect_uri, state=state
+        )
+        if not isinstance(response, RedirectResponse):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid OAuth response type",
+            )
+        return response
+    except Exception as e:
+        logger.error("Failed to initiate Google OAuth flow: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
 
 
 @router.get("/google/callback")
@@ -63,6 +81,16 @@ async def oauth_callback_google(
         HTTPException: If authentication fails
     """
     try:
+        # Verify state parameter
+        state = request.query_params.get("state")
+        session_state = request.session.get("oauth_state")
+
+        if not state or not session_state or state != session_state:
+            raise AuthError("Invalid OAuth state")
+
+        # Clear the state from session after verification
+        request.session.pop("oauth_state", None)
+
         auth_service = AuthService(user_repo, audit_repo)
         return await auth_service.handle_social_auth(
             request=request,
@@ -78,12 +106,29 @@ async def oauth_callback_google(
 
 
 @router.post("/apple/authorize")
-async def apple_login(request: Request) -> Response:
+async def apple_login(request: Request) -> RedirectResponse:
     """Start Apple OAuth2 flow."""
-    redirect_uri = request.url_for("oauth_callback_apple")
-    state = request.session.get("oauth_state", "")
-    response = await oauth.apple.authorize_redirect(request, redirect_uri, state=state)
-    return cast(Response, response)
+    try:
+        # Generate a secure random state
+        state = secrets.token_urlsafe(32)
+        request.session["oauth_state"] = state
+
+        redirect_uri = request.url_for("oauth_callback_apple")
+        response = await oauth.apple.authorize_redirect(
+            request, redirect_uri, state=state
+        )
+        if not isinstance(response, RedirectResponse):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid OAuth response type",
+            )
+        return response
+    except Exception as e:
+        logger.error("Failed to initiate Apple OAuth flow: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
 
 
 @router.post("/apple/callback")
@@ -110,6 +155,16 @@ async def oauth_callback_apple(
         HTTPException: If authentication fails
     """
     try:
+        # Verify state parameter
+        state = request.query_params.get("state")
+        session_state = request.session.get("oauth_state")
+
+        if not state or not session_state or state != session_state:
+            raise AuthError("Invalid OAuth state")
+
+        # Clear the state from session after verification
+        request.session.pop("oauth_state", None)
+
         auth_service = AuthService(user_repo, audit_repo)
         return await auth_service.handle_social_auth(
             request=request,

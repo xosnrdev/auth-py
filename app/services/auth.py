@@ -158,6 +158,7 @@ class AuthService:
                     user_id=user.id,
                     user_agent=request.headers.get("user-agent", ""),
                     ip_address=get_client_ip(request),
+                    request=request,
                     response=None if is_api_client else response,
                 )
 
@@ -327,9 +328,6 @@ class AuthService:
                     provider=provider,
                     social_id=user_info["sub"],
                     is_verified=user_info.get("email_verified", False),
-                    name=user_info.get("name"),
-                    picture=user_info.get("picture"),
-                    locale=user_info.get("locale"),
                 )
 
             # Create tokens
@@ -337,6 +335,7 @@ class AuthService:
                 user_id=user.id,
                 user_agent=request.headers.get("user-agent", ""),
                 ip_address=get_client_ip(request),
+                request=request,
                 response=response,
             )
 
@@ -351,6 +350,16 @@ class AuthService:
                 }
             )
 
+            # For web clients
+            if tokens is None:
+                return TokenResponse(
+                    access_token=cast(str, request.session.get("access_token")),
+                    refresh_token=None,
+                    token_type="bearer",
+                    expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
+                )
+
+            # For API clients
             return TokenResponse(
                 access_token=cast(dict[str, str], tokens)["access_token"],
                 refresh_token=cast(dict[str, str], tokens)["refresh_token"],

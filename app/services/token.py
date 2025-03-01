@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Final, TypedDict, cast
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException, Response, status
+from fastapi import HTTPException, Request, Response, status
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, field_validator
 from redis.asyncio.client import Redis
@@ -92,6 +92,7 @@ class TokenService:
         user_id: UUID,
         user_agent: str,
         ip_address: str,
+        request: Request | None = None,
         response: Response | None = None,
     ) -> TokenResponse | None:
         """Create access and refresh tokens securely."""
@@ -102,8 +103,8 @@ class TokenService:
             ip_address=ip_address,
         )
 
-        # Web client: Set secure cookie
-        if response:
+        # Web client: Set secure cookie and store access token in session
+        if response and request and hasattr(request, "session"):
             response.set_cookie(
                 key="refresh_token",
                 value=refresh_token,
@@ -115,6 +116,7 @@ class TokenService:
                     (datetime.now(UTC) + timedelta(seconds=COOKIE_MAX_AGE)).timestamp()
                 ),
             )
+            request.session["access_token"] = access_token
             return None
 
         # API client: Return tokens

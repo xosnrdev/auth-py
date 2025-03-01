@@ -1,6 +1,7 @@
 """OAuth2 integration using Authlib."""
 
 import logging
+import secrets
 from typing import Annotated, TypedDict
 
 from authlib.integrations.starlette_client import OAuth
@@ -18,10 +19,19 @@ class CustomOAuth(OAuth):
         """Validate state parameter."""
         state = request.query_params.get("state")
         session_state = request.session.get("oauth_state")
-        logger.debug(
-            "Validating state - Request: %s, Session: %s", state, session_state
-        )
-        return state == session_state
+
+        if not state or not session_state:
+            logger.warning("Missing state parameter or session state")
+            return False
+
+        valid = secrets.compare_digest(state.encode(), session_state.encode())
+
+        if not valid:
+            logger.warning("Invalid state parameter")
+            return False
+
+        request.session.pop("oauth_state", None)
+        return True
 
 
 class UserInfo(TypedDict):
@@ -51,6 +61,7 @@ if settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_SECRET:
             "response_type": "code",
             "response_mode": "query",
             "prompt": "select_account",
+            "state_generator": lambda: secrets.token_urlsafe(32),
         },
     )
     logger.info("Google OAuth provider registered")

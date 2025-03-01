@@ -185,9 +185,6 @@ class UserRepository(BaseRepository[User]):
         social_id: str,
         *,
         is_verified: bool = True,
-        name: str | None = None,
-        picture: str | None = None,
-        locale: str | None = None,
     ) -> User:
         """Create a new user from social login.
 
@@ -196,9 +193,6 @@ class UserRepository(BaseRepository[User]):
             provider: OAuth provider name
             social_id: Provider's user ID
             is_verified: Whether email is verified (default True for social)
-            name: User's display name
-            picture: User's profile picture URL
-            locale: User's preferred locale
 
         Returns:
             Created user instance
@@ -218,9 +212,6 @@ class UserRepository(BaseRepository[User]):
                 "is_active": True,
                 "is_verified": is_verified,
                 "password_hash": "",
-                "name": name,
-                "picture": picture,
-                "locale": locale,
                 "social_id": {provider: social_id},
             }
         )

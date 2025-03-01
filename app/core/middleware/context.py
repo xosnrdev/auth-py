@@ -11,8 +11,12 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 logger = logging.getLogger(__name__)
 
 request_id_ctx: ContextVar[UUID] = ContextVar("request_id")
-client_ip_ctx: ContextVar[str] = ContextVar("client_ip", default="unknown")
-user_agent_ctx: ContextVar[str] = ContextVar("user_agent", default="unknown")
+client_ip_ctx: ContextVar[str] = ContextVar("client_ip")
+user_agent_ctx: ContextVar[str] = ContextVar("user_agent")
+
+request_id_ctx.set(uuid4())
+client_ip_ctx.set("unknown")
+user_agent_ctx.set("unknown")
 
 REQUEST_ID_HEADER: Final[str] = "X-Request-ID"
 

@@ -103,20 +103,22 @@ def register_middleware(app: FastAPI) -> None:
         1. CORS (cross-origin)
         2. Session (auth)
         3. Context (request context)
-        4. Security Headers (security)
-        5. Response Time (timing)
-        6. Version (headers)
-        7. Rate Limit (throttling)
-        8. Audit (logging)
+        4. Audit (logging)
+        5. Security Headers (security)
+        6. Response Time (timing)
+        7. Version (headers)
+        8. Rate Limit (throttling)
     """
-    app.add_middleware(AuditMiddleware)
-    app.add_middleware(RateLimitMiddleware)
-    app.add_middleware(APIVersionMiddleware)
-    app.add_middleware(ResponseTimeMiddleware)
-    app.add_middleware(SecurityHeadersMiddleware)
-    app.add_middleware(RequestContextMiddleware)
     setup_session_middleware(app, settings.JWT_SECRET.get_secret_value())
     setup_cors(app)
+
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(AuditMiddleware)
+
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(ResponseTimeMiddleware)
+    app.add_middleware(APIVersionMiddleware)
+    app.add_middleware(RateLimitMiddleware)
 
 
 def register_routers(app: FastAPI) -> None:

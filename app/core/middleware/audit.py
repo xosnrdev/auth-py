@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from uuid import uuid4
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -45,10 +46,24 @@ class AuditMiddleware(BaseHTTPMiddleware):
         Returns:
             FastAPI response
         """
-        # Get context data
-        request_id = request_id_ctx.get()
-        client_ip = client_ip_ctx.get()
-        user_agent = user_agent_ctx.get()
+        # Get context data with fallbacks
+        try:
+            request_id = request_id_ctx.get()
+        except LookupError:
+            request_id = uuid4()
+            logger.warning("Request ID context not found, using generated ID")
+
+        try:
+            client_ip = client_ip_ctx.get()
+        except LookupError:
+            client_ip = request.client.host if request.client else "unknown"
+            logger.warning("Client IP context not found, using request client IP")
+
+        try:
+            user_agent = user_agent_ctx.get()
+        except LookupError:
+            user_agent = request.headers.get("user-agent", "unknown")
+            logger.warning("User agent context not found, using request header")
 
         # Get request details
         method = request.method

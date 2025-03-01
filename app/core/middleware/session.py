@@ -17,12 +17,12 @@ def setup_session_middleware(app: FastAPI, secret_key: str) -> None:
         app: The FastAPI application instance
         secret_key: Secret key for signing session data
     """
-    logger.debug("Setting up session middleware with key length: %d", len(secret_key))
     app.add_middleware(
         SessionMiddleware,
         secret_key=secret_key,
-        session_cookie="auth_session",
+        session_cookie="oauth_session",
         max_age=settings.COOKIE_MAX_AGE_SECS,
         same_site="lax",
         https_only=settings.ENVIRONMENT == Environment.PRODUCTION,
+        path="/api/v1/auth/social",
     )
