@@ -19,11 +19,11 @@ FRAME_OPTIONS: Final[str] = "DENY"
 
 CSP_POLICY: Final[str] = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com blob:; "
-    "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdn.jsdelivr.net blob:; "
+    "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com https://cdn.jsdelivr.net; "
     "img-src 'self' data: https://validator.swagger.io https://fastapi.tiangolo.com https://cdn.redoc.ly; "
     "font-src 'self' data: https://unpkg.com https://fonts.gstatic.com; "
-    "connect-src 'self' https://unpkg.com; "
+    "connect-src 'self' https://unpkg.com https://cdn.jsdelivr.net; "
     "frame-src 'none'; "
     "object-src 'none'; "
     "base-uri 'self'; "
@@ -45,17 +45,12 @@ PERMISSIONS_POLICY: Final[str] = (
     "usb=()"
 )
 
-FEATURE_POLICY: Final[str] = (
-    "microphone 'none'; "
-    "geolocation 'none'; "
-    "camera 'none'"
-)
+FEATURE_POLICY: Final[str] = "microphone 'none'; geolocation 'none'; camera 'none'"
 
-# CORS exposed headers
 EXPOSED_HEADERS: Final[tuple[str, ...]] = (
     "X-RateLimit-Limit",
     "X-RateLimit-Remaining",
-    "X-RateLimit-Reset"
+    "X-RateLimit-Reset",
 )
 
 
@@ -72,15 +67,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         headers = {
             "Strict-Transport-Security": HSTS_POLICY,
-
             # XSS prevention
             "Content-Security-Policy": CSP_POLICY,
             "X-Content-Type-Options": CONTENT_TYPE_OPTIONS,
             "X-XSS-Protection": XSS_PROTECTION,
-
             # Clickjacking prevention
             "X-Frame-Options": FRAME_OPTIONS,
-
             # API restrictions
             "Permissions-Policy": PERMISSIONS_POLICY,
         }

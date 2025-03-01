@@ -66,7 +66,7 @@ cp .env.example .env
 
 - Interactive API docs: `/docs`
 - API reference: `/redoc`
-- OpenAPI schema: `/api/openapi.json`
+- OpenAPI schema: `/openapi.json`
 
 ## License
 
