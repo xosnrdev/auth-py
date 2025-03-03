@@ -19,26 +19,59 @@ IPV6_PATTERN: Final[str] = r"^(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}$"
 
 
 class AuditLogBase(BaseModel):
-    """Base audit log fields."""
+    """Base audit log data validation."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
+            "example": {
+                "action": "login",
+                "ip_address": "192.168.1.1",
+                "user_agent": "Mozilla/5.0",
+                "details": "User logged in successfully",
+            }
+        },
+        populate_by_name=True,
+    )
 
     action: str = Field(
         max_length=MAX_ACTION_LENGTH,
-        examples=["login", "password_reset"],
+        description="Action performed (e.g. login, update_profile)",
+        examples=["login", "update_profile", "password_reset"],
     )
     ip_address: str = Field(
-        max_length=MAX_IP_LENGTH,
+        description="Client IP address",
         examples=["192.168.1.1", "2001:db8::1"],
     )
     user_agent: str = Field(
-        max_length=MAX_USER_AGENT_LENGTH,
-        examples=["Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)..."],
+        description="Client user agent string",
+        examples=["Mozilla/5.0 (Windows NT 10.0; Win64; x64)"],
     )
     details: str | None = Field(
         default=None,
-        max_length=MAX_DETAILS_LENGTH,
-        examples=["2FA verification successful"],
+        description="Additional event details in JSON format",
+        examples=["User logged in successfully", "Password reset requested"],
+    )
+
+
+class AuditLogCreate(AuditLogBase):
+    """Audit log creation data."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "user_id": "123e4567-e89b-12d3-a456-426614174000",
+                "action": "login",
+                "ip_address": "192.168.1.1",
+                "user_agent": "Mozilla/5.0",
+                "details": "User logged in successfully",
+            }
+        },
+    )
+
+    user_id: UUID | None = Field(
+        default=None,
+        description="ID of the user who performed the action",
     )
 
     @field_validator("ip_address")
@@ -52,22 +85,31 @@ class AuditLogBase(BaseModel):
         return v
 
 
-class AuditLogCreate(AuditLogBase):
-    """New audit log entry."""
-
-    user_id: UUID = Field(
-        examples=["123e4567-e89b-12d3-a456-426614174000"],
-    )
-
-
 class AuditLogResponse(AuditLogBase, BaseSchema):
-    """Audit log entry with timestamps."""
+    """Audit log data for responses."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "id": "123e4567-e89b-12d3-a456-426614174000",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "user_id": "123e4567-e89b-12d3-a456-426614174000",
+                "action": "login",
+                "ip_address": "192.168.1.1",
+                "user_agent": "Mozilla/5.0",
+                "details": "User logged in successfully",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+            }
+        },
+    )
 
     timestamp: datetime = Field(
-        examples=["2025-02-23T10:20:30.123Z"],
+        description="Event timestamp in UTC",
     )
-    user_id: UUID = Field(
-        examples=["123e4567-e89b-12d3-a456-426614174000"],
+    user_id: UUID | None = Field(
+        default=None,
+        description="ID of the user who performed the action",
     )
 
     @field_validator("timestamp")
