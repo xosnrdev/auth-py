@@ -5,12 +5,10 @@ from datetime import UTC, datetime
 from typing import Final
 from uuid import UUID
 
-from fastapi import Request
-
 from app.core.errors import AuditError, NotFoundError
 from app.models import AuditLog
 from app.repositories import AuditLogRepository
-from app.utils.request import get_client_ip
+from app.schemas.audit import AuditLogCreate
 
 logger = logging.getLogger(__name__)
 
@@ -116,20 +114,11 @@ class AuditService:
             logger.error("Failed to retrieve audit log: %s", str(e))
             raise AuditError("Failed to retrieve audit log")
 
-    async def create_log(
-        self,
-        request: Request,
-        user_id: UUID,
-        action: str,
-        details: str,
-    ) -> AuditLog:
-        """Create new audit log entry.
+    async def create_log(self, log_data: AuditLogCreate) -> AuditLog:
+        """Create a new audit log entry.
 
         Args:
-            request: FastAPI request
-            user_id: User ID
-            action: Action type
-            details: Action details
+            log_data: Audit log data
 
         Returns:
             Created audit log
@@ -138,15 +127,11 @@ class AuditService:
             AuditError: If log creation fails
         """
         try:
-            return await self._audit_repo.create(
-                {
-                    "user_id": user_id,
-                    "action": action,
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": details,
-                }
-            )
+            # Convert schema to dict and add timestamp
+            create_data = log_data.model_dump()
+            create_data["timestamp"] = datetime.now(UTC)
+
+            # Create audit log
+            return await self._audit_repo.create(create_data)
         except Exception as e:
-            logger.error("Failed to create audit log: %s", str(e))
-            raise AuditError("Failed to create audit log")
+            raise AuditError(f"Failed to create audit log: {str(e)}")

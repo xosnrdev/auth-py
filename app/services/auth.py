@@ -10,19 +10,22 @@ from fastapi import Request, Response
 from fastapi.security import OAuth2PasswordRequestForm
 
 from app.core.config import settings
-from app.core.errors import AuthError, DuplicateError, NotFoundError
+from app.core.errors import AuthError, DuplicateError, NotFoundError, RateLimitError
 from app.core.oauth2 import AppleOAuthUserInfo, OAuthUserInfo
 from app.core.security import get_password_hash, verify_password
-from app.models import User
-from app.repositories import AuditLogRepository, UserRepository
+from app.models.user import User, UserRole
+from app.repositories.audit import AuditLogRepository
+from app.repositories.token import TokenRepository
+from app.repositories.user import UserRepository
+from app.schemas.audit import AuditLogCreate
+from app.schemas.token import TokenResponse, TokenType
+from app.schemas.user import PasswordResetVerify
+from app.services.audit import AuditService
 from app.services.email import email_service
-from app.services.token import TokenResponse, TokenType, token_service
+from app.services.token import TokenService
 from app.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
-
-MAX_LOGIN_ATTEMPTS = 5
-LOGIN_ATTEMPT_WINDOW_SECS = 3600
 
 
 class AuthService:
@@ -40,15 +43,69 @@ class AuthService:
         self,
         user_repo: UserRepository,
         audit_repo: AuditLogRepository,
+        token_repo: TokenRepository,
     ) -> None:
         """Initialize auth service.
 
         Args:
             user_repo: User repository for user operations
             audit_repo: Audit repository for logging auth events
+            token_repo: Token repository for token operations
         """
         self._user_repo = user_repo
         self._audit_repo = audit_repo
+        self._token_service = TokenService(token_repo)
+
+    async def _check_ip_rate_limit(
+        self,
+        request: Request,
+        email: str | None = None,
+    ) -> None:
+        """Check if IP address has exceeded failed login attempts.
+
+        Args:
+            request: FastAPI request
+            email: Optional email to check for admin/moderator roles
+
+        Raises:
+            RateLimitError: If too many failed attempts from IP
+        """
+        # Check if user is admin/moderator
+        if email:
+            try:
+                user = await self._user_repo.get_by_email(email.lower())
+                if user.role in (UserRole.ADMIN, UserRole.MODERATOR):
+                    return
+            except NotFoundError:
+                pass
+
+        # Get client IP
+        ip_address = get_client_ip(request)
+
+        # Get recent failed attempts from this IP
+        audit_service = AuditService(self._audit_repo)
+        failed_attempts = await self._audit_repo.get_by_ip_address(
+            ip_address=ip_address,
+            action="login_failed",
+            since=datetime.now(UTC)
+            - timedelta(seconds=settings.RATE_LIMIT_WINDOW_SECS),
+        )
+
+        # Check if IP has exceeded limit
+        if len(failed_attempts) >= settings.MAX_LOGIN_ATTEMPTS:
+            # Log IP blocked
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=None,
+                    action="ip_blocked",
+                    ip_address=ip_address,
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"IP address blocked due to {settings.MAX_LOGIN_ATTEMPTS} failed login attempts",
+                )
+            )
+            raise RateLimitError(
+                f"Too many failed login attempts from this IP. Try again in {settings.RATE_LIMIT_WINDOW_SECS // 60} minutes."
+            )
 
     async def login(
         self,
@@ -71,48 +128,95 @@ class AuthService:
             RateLimitError: If too many failed attempts
         """
         try:
-            # Get user by email
-            user = await self._user_repo.get_by_email(form_data.username.lower())
+            # Get user by email first
+            try:
+                user = await self._user_repo.get_by_email(form_data.username.lower())
 
-            # Verify password
-            if not verify_password(form_data.password, user.password_hash):
-                await self._handle_failed_login(request, user)
+                # Verify password
+                if not verify_password(form_data.password, user.password_hash):
+                    await self._handle_failed_login(request, user)
+                    raise AuthError("Invalid credentials")
+
+                # Check user status
+                if not user.is_active:
+                    raise AuthError("Account is disabled")
+                if not user.is_verified:
+                    raise AuthError("Email not verified")
+
+                # Check IP rate limit only after user-specific checks
+                await self._check_ip_rate_limit(request, form_data.username)
+
+                # Reset failed login attempts on successful login
+                await self._user_repo.reset_failed_login(user.id)
+
+                # Create tokens
+                tokens = await self._token_service.create_tokens(
+                    user_id=user.id,
+                    user_agent=request.headers.get("user-agent", ""),
+                    ip_address=get_client_ip(request),
+                    response=response,
+                )
+
+                # Log successful login
+                audit_service = AuditService(self._audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=user.id,
+                        action="login",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details="Successful login",
+                    )
+                )
+
+                # For web clients
+                if tokens is None:
+                    return TokenResponse(
+                        access_token=request.session["access_token"],
+                        refresh_token=None,
+                        token_type="bearer",
+                        expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
+                    )
+
+                # For API clients
+                return tokens
+
+            except NotFoundError:
+                # Check IP rate limit for non-existent users
+                await self._check_ip_rate_limit(request)
+
+                # Get recent failed attempts from this IP for non-existent users
+                audit_service = AuditService(self._audit_repo)
+                failed_attempts = await self._audit_repo.get_by_ip_address(
+                    ip_address=get_client_ip(request),
+                    action="login_failed",
+                    since=datetime.now(UTC)
+                    - timedelta(seconds=settings.RATE_LIMIT_WINDOW_SECS),
+                )
+
+                # Log failed login attempt for non-existent user
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=None,  # No user ID since user doesn't exist
+                        action="login_failed",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details=f"Failed login attempt for non-existent user: {form_data.username}",
+                    )
+                )
+
+                # Apply rate limiting for non-existent users
+                if (
+                    len(failed_attempts) >= settings.MAX_LOGIN_ATTEMPTS - 1
+                ):  # -1 to count current attempt
+                    raise RateLimitError(
+                        f"Too many failed login attempts. Try again in {settings.RATE_LIMIT_WINDOW_SECS // 60} minutes."
+                    )
+
                 raise AuthError("Invalid credentials")
 
-            # Check user status
-            if not user.is_active:
-                raise AuthError("Account is disabled")
-            if not user.is_verified:
-                raise AuthError("Email not verified")
-
-            # Create tokens
-            tokens = await token_service.create_tokens(
-                user_id=user.id,
-                user_agent=request.headers.get("user-agent", ""),
-                ip_address=get_client_ip(request),
-                response=response,
-            )
-
-            # Log successful login
-            await self._audit_repo.create(
-                {
-                    "user_id": user.id,
-                    "action": "login",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Successful login",
-                }
-            )
-
-            return TokenResponse(
-                access_token=cast(dict[str, str], tokens)["access_token"],
-                refresh_token=cast(dict[str, str], tokens)["refresh_token"],
-                token_type="bearer",
-                expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
-            )
-
-        except NotFoundError:
-            raise AuthError("Invalid credentials")
+        except RateLimitError:
+            raise
 
         except Exception as e:
             logger.error("Login failed: %s", str(e))
@@ -139,7 +243,7 @@ class AuthService:
         """
         try:
             # Verify refresh token
-            token_data = await token_service.verify_token(
+            token_data = await self._token_service.verify_token(
                 refresh_token, TokenType.REFRESH
             )
 
@@ -147,14 +251,14 @@ class AuthService:
                 # Get user by ID
                 user = await self._user_repo.get_by_id(UUID(token_data.sub))
                 if not user.is_active:
-                    await token_service.revoke_token(refresh_token)
+                    await self._token_service.revoke_token(refresh_token)
                     raise AuthError("User not found or inactive")
 
                 # Create new tokens
                 is_api_client = "application/json" in request.headers.get(
                     "content-type", ""
                 )
-                tokens = await token_service.create_tokens(
+                tokens = await self._token_service.create_tokens(
                     user_id=user.id,
                     user_agent=request.headers.get("user-agent", ""),
                     ip_address=get_client_ip(request),
@@ -163,36 +267,34 @@ class AuthService:
                 )
 
                 # Revoke old token
-                await token_service.revoke_token(refresh_token)
+                await self._token_service.revoke_token(refresh_token)
 
                 # Log token refresh
-                await self._audit_repo.create(
-                    {
-                        "user_id": user.id,
-                        "action": "refresh_token",
-                        "ip_address": get_client_ip(request),
-                        "user_agent": request.headers.get("user-agent", ""),
-                        "details": "Refreshed access token",
-                    }
+                audit_service = AuditService(self._audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=user.id,
+                        action="refresh_token",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details="Refreshed access token",
+                    )
                 )
 
-                if is_api_client:
+                # For web clients
+                if tokens is None:
                     return TokenResponse(
-                        access_token=cast(dict[str, str], tokens)["access_token"],
-                        refresh_token=cast(dict[str, str], tokens)["refresh_token"],
-                        token_type="bearer",
-                        expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
-                    )
-                else:
-                    return TokenResponse(
-                        access_token=cast(dict[str, str], tokens)["access_token"],
+                        access_token=cast(str, request.session.get("access_token")),
                         refresh_token=None,
                         token_type="bearer",
                         expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
                     )
 
+                # For API clients
+                return tokens
+
             except NotFoundError:
-                await token_service.revoke_token(refresh_token)
+                await self._token_service.revoke_token(refresh_token)
                 raise AuthError("User not found or inactive")
 
         except Exception as e:
@@ -219,23 +321,23 @@ class AuthService:
         """
         try:
             # Revoke current access token
-            await token_service.revoke_token(access_token)
+            await self._token_service.revoke_token(access_token)
 
             # Revoke all user tokens
-            await token_service.revoke_all_user_tokens(user.id.hex)
+            await self._token_service.revoke_all_user_tokens(user.id.hex)
 
             # Log logout
-            await self._audit_repo.create(
-                {
-                    "user_id": user.id,
-                    "action": "logout",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Logged out",
-                }
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="logout",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="Logged out",
+                )
             )
 
-            # Clear refresh token cookie
             response.delete_cookie(key="refresh_token")
 
         except Exception as e:
@@ -251,40 +353,58 @@ class AuthService:
 
         Args:
             request: FastAPI request
-            user: User that failed to login
+            user: User instance
 
         Raises:
             RateLimitError: If too many failed attempts
         """
-        # Log failed attempt
-        await self._audit_repo.create(
-            {
-                "user_id": user.id,
-                "action": "login_failed",
-                "ip_address": get_client_ip(request),
-                "user_agent": request.headers.get("user-agent", ""),
-                "details": "Failed login attempt",
-            }
-        )
+        # Increment failed login attempts
+        updated_user = await self._user_repo.increment_failed_login(user.id)
 
-        # Check failed attempts in time window
-        since = datetime.now(UTC).timestamp() - LOGIN_ATTEMPT_WINDOW_SECS
-        failed_attempts = await self._audit_repo.count(
-            {
-                "user_id": user.id,
-                "action": "login_failed",
-                "created_at_gt": since,
-            }
-        )
-
-        if failed_attempts >= MAX_LOGIN_ATTEMPTS:
-            # Disable account if too many failed attempts
-            await self._user_repo.update(user.id, {"is_active": False})
-            logger.warning(
-                "Account disabled due to too many failed attempts: %s",
-                user.email,
+        # Log failed login attempt
+        audit_service = AuditService(self._audit_repo)
+        await audit_service.create_log(
+            AuditLogCreate(
+                user_id=user.id,
+                action="login_failed",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details=f"Failed login attempt ({updated_user.failed_login_attempts}/{settings.MAX_LOGIN_ATTEMPTS})",
             )
-            raise AuthError("Too many failed attempts. Account disabled.")
+        )
+
+        # First check if account should be disabled
+        if updated_user.failed_login_attempts >= settings.MAX_LOGIN_ATTEMPTS - 1:
+            # Disable account
+            await self._user_repo.disable_account(user.id)
+
+            # Log account disabled
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="account_disabled",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"Account disabled due to {settings.MAX_LOGIN_ATTEMPTS} failed login attempts",
+                )
+            )
+
+            raise RateLimitError(
+                f"Account disabled due to {settings.MAX_LOGIN_ATTEMPTS} failed login attempts"
+            )
+
+        # Then check rate limit window only if account is not disabled
+        if (
+            updated_user.last_failed_login_at
+            and (datetime.now(UTC) - updated_user.last_failed_login_at).total_seconds()
+            < settings.RATE_LIMIT_WINDOW_SECS
+        ):
+            remaining_attempts = (
+                settings.MAX_LOGIN_ATTEMPTS - updated_user.failed_login_attempts
+            )
+            raise RateLimitError(
+                f"Too many failed login attempts. {remaining_attempts} attempts remaining."
+            )
 
     async def handle_social_auth(
         self,
@@ -309,29 +429,32 @@ class AuthService:
             DuplicateError: If account linking fails
         """
         try:
-            # Try to find existing user
+            # Try to find existing user by OAuth ID first
             try:
-                user = await self._user_repo.get_by_email(user_info["email"])
-
-                # Link social account if not already linked
-                if provider not in user.social_id:
-                    user = await self._user_repo.link_social_account(
-                        user_id=user.id,
+                user = await self._user_repo.get_by_oauth_id(
+                    provider=provider,
+                    oauth_id=user_info["sub"],
+                )
+            except NotFoundError:
+                # Try to find by email
+                try:
+                    user = await self._user_repo.get_by_email(user_info["email"])
+                    if not user.oauth_id:
+                        user = await self._user_repo.link_oauth_account(
+                            user_id=user.id,
+                            provider=provider,
+                            oauth_id=user_info["sub"],
+                        )
+                except NotFoundError:
+                    user = await self._user_repo.create_oauth_user(
+                        email=user_info["email"],
                         provider=provider,
-                        social_id=user_info["sub"],
+                        oauth_id=user_info["sub"],
+                        is_verified=user_info.get("email_verified", False),
+                        role=UserRole.USER,
                     )
 
-            except NotFoundError:
-                # Create new user
-                user = await self._user_repo.create_social_user(
-                    email=user_info["email"],
-                    provider=provider,
-                    social_id=user_info["sub"],
-                    is_verified=user_info.get("email_verified", False),
-                )
-
-            # Create tokens
-            tokens = await token_service.create_tokens(
+            tokens = await self._token_service.create_tokens(
                 user_id=user.id,
                 user_agent=request.headers.get("user-agent", ""),
                 ip_address=get_client_ip(request),
@@ -339,15 +462,15 @@ class AuthService:
                 response=response,
             )
 
-            # Log successful login
-            await self._audit_repo.create(
-                {
-                    "user_id": user.id,
-                    "action": f"login_{provider}",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": f"Logged in with {provider}",
-                }
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action=f"login_{provider}",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"Logged in with {provider}",
+                )
             )
 
             # For web clients
@@ -360,12 +483,7 @@ class AuthService:
                 )
 
             # For API clients
-            return TokenResponse(
-                access_token=cast(dict[str, str], tokens)["access_token"],
-                refresh_token=cast(dict[str, str], tokens)["refresh_token"],
-                token_type="bearer",
-                expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
-            )
+            return tokens
 
         except DuplicateError as e:
             logger.error("Social auth failed: %s", str(e))
@@ -405,16 +523,14 @@ class AuthService:
             AuthError: If request fails
         """
         try:
-            # Get user by email
             user = await self._user_repo.get_by_email(email.lower())
 
-            # Generate reset token
             reset_token = token_hex(32)
             reset_token_expires = datetime.now(UTC) + timedelta(
                 seconds=settings.VERIFICATION_CODE_TTL_SECS,
             )
 
-            # Update user with reset token
+            # Update user with reset token first
             await self._user_repo.update(
                 user.id,
                 {
@@ -423,25 +539,38 @@ class AuthService:
                 },
             )
 
-            # Send reset email
-            reset_url = f"{settings.FRONTEND_URL.unicode_string()}{settings.PASSWORD_RESET_URI}?token={reset_token}"
-            await email_service.send_password_reset_email(user.email, reset_url)
-
-            # Log password reset request
-            await self._audit_repo.create(
-                {
-                    "user_id": user.id,
-                    "action": "password_reset_request",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Password reset requested",
-                }
+            # Log the action
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="password_reset_request",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="Password reset requested",
+                )
             )
 
-        except NotFoundError:
-            # Return silently to prevent email enumeration
-            pass
+            # Attempt to send email but don't roll back if it fails
+            try:
+                reset_url = f"{settings.FRONTEND_URL.unicode_string()}{settings.PASSWORD_RESET_URI}?token={reset_token}"
+                await email_service.send_password_reset_email(user.email, reset_url)
+            except Exception as e:
+                logger.error("Failed to send password reset email: %s", str(e))
+                # Log the email failure but don't raise
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=user.id,
+                        action="password_reset_email",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details=f"Failed to send password reset email: {str(e)}",
+                    )
+                )
 
+        except NotFoundError:
+            # Silently pass for non-existent emails to prevent enumeration
+            pass
         except Exception as e:
             logger.error("Password reset request failed: %s", str(e))
             raise AuthError("Failed to process password reset request")
@@ -449,51 +578,150 @@ class AuthService:
     async def verify_password_reset(
         self,
         request: Request,
-        token: str,
-        new_password: str,
+        reset_data: PasswordResetVerify,
     ) -> None:
-        """Verify password reset token and set new password.
+        """Verify password reset token and update password.
 
         Args:
             request: FastAPI request
-            token: Reset token
-            new_password: New password
+            reset_data: Password reset verification data
 
         Raises:
             AuthError: If verification fails
         """
         try:
-            # Get user by reset token
-            user = await self._user_repo.get_by_reset_token(token)
+            user = await self._user_repo.get_by_reset_token(reset_data.token)
 
-            # Update password
-            password_hash = get_password_hash(new_password)
             await self._user_repo.update(
                 user.id,
                 {
-                    "password_hash": password_hash,
+                    "password_hash": get_password_hash(reset_data.password),
                     "reset_token": None,
                     "reset_token_expires_at": None,
                 },
             )
 
-            # Log password reset
-            await self._audit_repo.create(
-                {
-                    "user_id": user.id,
-                    "action": "password_reset",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Password reset successful",
-                }
-            )
+            await self._token_service.revoke_all_user_tokens(user.id.hex)
 
-            # Revoke all existing sessions
-            await token_service.revoke_all_user_tokens(user.id.hex)
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="password_reset",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="Password reset successful",
+                )
+            )
 
         except NotFoundError:
             raise AuthError("Invalid or expired reset token")
-
         except Exception as e:
             logger.error("Password reset verification failed: %s", str(e))
             raise AuthError("Failed to reset password")
+
+    async def _create_oauth_user(
+        self,
+        request: Request,
+        email: str,
+        provider: str,
+        oauth_id: str,
+    ) -> User:
+        """Create a new user from OAuth login.
+
+        Args:
+            request: FastAPI request
+            email: User's email address
+            provider: OAuth provider name
+            oauth_id: Provider's user ID
+
+        Returns:
+            Created user
+
+        Raises:
+            AuthError: If user creation fails
+        """
+        try:
+            user = await self._user_repo.create_oauth_user(
+                email=email,
+                provider=provider,
+                oauth_id=oauth_id,
+                is_verified=True,
+                role=UserRole.USER,
+            )
+
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="oauth_register",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"OAuth registration successful via {provider}",
+                )
+            )
+
+            return user
+
+        except Exception as e:
+            logger.error("OAuth registration failed: %s", str(e))
+            raise AuthError("Failed to register user")
+
+    async def _link_oauth_account(
+        self,
+        request: Request,
+        user: User,
+        provider: str,
+        oauth_id: str,
+    ) -> User:
+        """Link OAuth account to existing user.
+
+        Args:
+            request: FastAPI request
+            user: User to link account to
+            provider: OAuth provider name
+            oauth_id: Provider's user ID
+
+        Returns:
+            Updated user
+
+        Raises:
+            AuthError: If account linking fails
+            DuplicateError: If OAuth account already linked
+        """
+        try:
+            try:
+                existing_user = await self._user_repo.get_by_oauth_id(
+                    provider, oauth_id
+                )
+                if existing_user.id != user.id:
+                    raise DuplicateError("OAuth account already linked to another user")
+            except NotFoundError:
+                pass
+
+            updated_user = await self._user_repo.update(
+                user.id,
+                {
+                    "oauth_provider": provider,
+                    "oauth_id": oauth_id,
+                },
+            )
+
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="oauth_link",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"OAuth account linked via {provider}",
+                )
+            )
+
+            return updated_user
+
+        except DuplicateError:
+            raise
+        except Exception as e:
+            logger.error("OAuth account linking failed: %s", str(e))
+            raise AuthError("Failed to link OAuth account")

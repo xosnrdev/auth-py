@@ -9,11 +9,14 @@ from fastapi import Request
 
 from app.core.config import settings
 from app.core.errors import DuplicateError, NotFoundError, UserError
-from app.core.security import get_password_hash
-from app.models import User
+from app.core.security import get_password_hash, verify_password
+from app.models.user import User, UserRole
 from app.repositories import AuditLogRepository, UserRepository
 from app.schemas import UserCreate, UserUpdate
+from app.schemas.audit import AuditLogCreate
+from app.services.audit import AuditService
 from app.services.email import EmailError, email_service
+from app.services.token import token_service
 from app.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -27,6 +30,8 @@ class UserService:
     - Profile management (update, delete)
     - Email verification and change
     - Account security
+    - User administration (list, get, update, delete)
+    - Role management
     """
 
     def __init__(
@@ -62,7 +67,6 @@ class UserService:
             DuplicateError: If email/phone already exists
         """
         try:
-            # Check for existing email/phone
             try:
                 await self._user_repo.get_by_email(user_data.email.lower())
                 raise DuplicateError("Email already registered")
@@ -76,35 +80,33 @@ class UserService:
                 except NotFoundError:
                     pass
 
-            # Generate verification code
             verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
             verification_expires = datetime.now(UTC) + timedelta(
                 seconds=settings.VERIFICATION_CODE_TTL_SECS,
             )
 
-            # Create user
-            user = await self._user_repo.create(
+            create_data = user_data.model_dump()
+            create_data.update(
                 {
-                    "email": user_data.email.lower(),
-                    "phone": user_data.phone,
-                    "password_hash": get_password_hash(user_data.password),
+                    "password_hash": get_password_hash(create_data.pop("password")),
                     "verification_code": verification_code,
                     "verification_code_expires_at": verification_expires,
                 }
             )
 
-            # Log registration
-            await self._audit_repo.create(
-                {
-                    "user_id": user.id,
-                    "action": "register",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "User registration successful",
-                }
+            user = await self._user_repo.create(create_data)
+
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="register",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="User registration successful",
+                )
             )
 
-            # Send verification email
             try:
                 await email_service.send_verification_email(
                     to_email=user_data.email.lower(),
@@ -112,14 +114,15 @@ class UserService:
                 )
             except EmailError as e:
                 logger.error("Failed to send verification email: %s", str(e))
-                await self._audit_repo.create(
-                    {
-                        "user_id": user.id,
-                        "action": "send_verification_email",
-                        "ip_address": get_client_ip(request),
-                        "user_agent": request.headers.get("user-agent", ""),
-                        "details": f"Failed to send verification email: {str(e)}",
-                    }
+                audit_service = AuditService(self._audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=user.id,
+                        action="send_verification_email",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details=f"Failed to send verification email: {str(e)}",
+                    )
                 )
 
             return user
@@ -145,20 +148,16 @@ class UserService:
             UserError: If verification fails
         """
         try:
-            # Get user by verification code
             user = await self._user_repo.get_by_verification_code(code)
 
-            # Check if code is expired
             if not user.verification_code_expires_at:
                 raise NotFoundError("Invalid verification code")
             if user.verification_code_expires_at <= datetime.now(UTC):
                 raise NotFoundError("Verification code expired")
 
-            # Check if already verified
             if user.is_verified:
                 raise NotFoundError("Email already verified")
 
-            # Update user
             await self._user_repo.update(
                 user.id,
                 {
@@ -168,15 +167,15 @@ class UserService:
                 },
             )
 
-            # Log verification
-            await self._audit_repo.create(
-                {
-                    "user_id": user.id,
-                    "action": "verify_email",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Email verified successfully",
-                }
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="verify_email",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="Email verified successfully",
+                )
             )
 
         except NotFoundError as e:
@@ -206,8 +205,16 @@ class UserService:
             DuplicateError: If phone number already exists
         """
         try:
-            # Check phone uniqueness
+            # Get current user first
+            current_user = await self._user_repo.get_by_id(user_id)
+
             if data.phone:
+                # Verify new phone is different from current
+                if data.phone == current_user.phone:
+                    raise UserError(
+                        "New phone number must be different from current phone number"
+                    )
+
                 try:
                     existing = await self._user_repo.get_by_phone(data.phone)
                     if existing.id != user_id:
@@ -215,30 +222,41 @@ class UserService:
                 except NotFoundError:
                     pass
 
-            # Prepare update data
             update_data = data.model_dump(exclude_unset=True)
+            password_updated = False
             if "password" in update_data:
+                # Verify new password is different from current
+                if verify_password(update_data["password"], current_user.password_hash):
+                    raise UserError(
+                        "New password must be different from current password"
+                    )
+
+                password_updated = True
                 update_data["password_hash"] = get_password_hash(
                     update_data.pop("password"),
                 )
 
-            # Update user
             user = await self._user_repo.update(user_id, update_data)
 
-            # Log update
-            await self._audit_repo.create(
-                {
-                    "user_id": user_id,
-                    "action": "update_profile",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Profile updated successfully",
-                }
+            if password_updated:
+                await token_service.revoke_all_user_tokens(user_id.hex)
+
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user_id,
+                    action="update_profile",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="Profile updated successfully",
+                )
             )
 
             return user
 
         except DuplicateError:
+            raise
+        except UserError:
             raise
         except Exception as e:
             logger.error("Profile update failed: %s", str(e))
@@ -259,18 +277,17 @@ class UserService:
             UserError: If deletion fails
         """
         try:
-            # Log deletion first in case user deletion fails
-            await self._audit_repo.create(
-                {
-                    "user_id": user_id,
-                    "action": "delete_account",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Account deleted successfully",
-                }
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user_id,
+                    action="delete_account",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="Account deleted successfully",
+                )
             )
 
-            # Delete user
             await self._user_repo.delete(user_id)
 
         except Exception as e:
@@ -295,27 +312,22 @@ class UserService:
             DuplicateError: If email already exists
         """
         try:
-            # Get current user
             user = await self._user_repo.get_by_id(user_id)
 
-            # Check if new email is different
             if new_email.lower() == user.email:
                 raise UserError("New email must be different from current email")
 
-            # Check if email is already taken
             try:
                 await self._user_repo.get_by_email(new_email.lower())
                 raise DuplicateError("Email already registered")
             except NotFoundError:
                 pass
 
-            # Generate verification code
             verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
             verification_expires = datetime.now(UTC) + timedelta(
                 seconds=settings.VERIFICATION_CODE_TTL_SECS,
             )
 
-            # Update user with verification code and pending email
             await self._user_repo.update(
                 user_id,
                 {
@@ -325,18 +337,17 @@ class UserService:
                 },
             )
 
-            # Log email change request
-            await self._audit_repo.create(
-                {
-                    "user_id": user_id,
-                    "action": "request_email_change",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": f"Requested email change to {new_email}",
-                }
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user_id,
+                    action="request_email_change",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"Requested email change to {new_email}",
+                )
             )
 
-            # Send verification email
             try:
                 await email_service.send_verification_email(
                     to_email=new_email.lower(),
@@ -344,14 +355,15 @@ class UserService:
                 )
             except EmailError as e:
                 logger.error("Failed to send verification email: %s", str(e))
-                await self._audit_repo.create(
-                    {
-                        "user_id": user_id,
-                        "action": "send_verification_email",
-                        "ip_address": get_client_ip(request),
-                        "user_agent": request.headers.get("user-agent", ""),
-                        "details": f"Failed to send verification email: {str(e)}",
-                    }
+                audit_service = AuditService(self._audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=user_id,
+                        action="send_verification_email",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details=f"Failed to send verification email: {str(e)}",
+                    )
                 )
                 raise UserError("Unable to send verification email")
 
@@ -384,14 +396,11 @@ class UserService:
             DuplicateError: If email already taken
         """
         try:
-            # Get current user
             user = await self._user_repo.get_by_id(user_id)
 
-            # Validate pending email change
             if not user.pending_email:
                 raise UserError("No pending email change")
 
-            # Validate verification code
             if not user.verification_code:
                 raise UserError("No verification code found")
             if user.verification_code != code:
@@ -402,7 +411,6 @@ class UserService:
             ):
                 raise UserError("Verification code expired")
 
-            # Check if email is still available
             try:
                 existing = await self._user_repo.get_by_email(user.pending_email)
                 if existing.id != user_id:
@@ -412,7 +420,6 @@ class UserService:
 
             old_email = user.email
 
-            # Update user email
             updated_user = await self._user_repo.update(
                 user_id,
                 {
@@ -424,18 +431,17 @@ class UserService:
                 },
             )
 
-            # Log email change
-            await self._audit_repo.create(
-                {
-                    "user_id": user_id,
-                    "action": "verify_email_change",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": f"Changed email from {old_email} to {updated_user.email}",
-                }
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user_id,
+                    action="verify_email_change",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"Email changed to {updated_user.email}",
+                )
             )
 
-            # Send notification to old email
             try:
                 await email_service.send_email_change_notification(
                     to_email=old_email,
@@ -443,14 +449,15 @@ class UserService:
                 )
             except EmailError as e:
                 logger.error("Failed to send change notification: %s", str(e))
-                await self._audit_repo.create(
-                    {
-                        "user_id": user_id,
-                        "action": "send_email_change_notification",
-                        "ip_address": get_client_ip(request),
-                        "user_agent": request.headers.get("user-agent", ""),
-                        "details": f"Failed to send change notification: {str(e)}",
-                    }
+                audit_service = AuditService(self._audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=user_id,
+                        action="send_email_change_notification",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details=f"Failed to send change notification: {str(e)}",
+                    )
                 )
 
             return updated_user
@@ -478,20 +485,16 @@ class UserService:
             UserError: If resend fails
         """
         try:
-            # Get current user
             user = await self._user_repo.get_by_id(user_id)
 
-            # Check if already verified
             if user.is_verified:
                 raise UserError("Email already verified")
 
-            # Generate new verification code
             verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
             verification_expires = datetime.now(UTC) + timedelta(
                 seconds=settings.VERIFICATION_CODE_TTL_SECS,
             )
 
-            # Update user with new verification code
             await self._user_repo.update(
                 user_id,
                 {
@@ -500,18 +503,17 @@ class UserService:
                 },
             )
 
-            # Log resend attempt
-            await self._audit_repo.create(
-                {
-                    "user_id": user_id,
-                    "action": "resend_verification",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Verification email resent",
-                }
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user_id,
+                    action="resend_verification",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="Verification email resent",
+                )
             )
 
-            # Send verification email
             try:
                 await email_service.send_verification_email(
                     to_email=user.email,
@@ -519,14 +521,15 @@ class UserService:
                 )
             except EmailError as e:
                 logger.error("Failed to send verification email: %s", str(e))
-                await self._audit_repo.create(
-                    {
-                        "user_id": user_id,
-                        "action": "send_verification_email",
-                        "ip_address": get_client_ip(request),
-                        "user_agent": request.headers.get("user-agent", ""),
-                        "details": f"Failed to send verification email: {str(e)}",
-                    }
+                audit_service = AuditService(self._audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=user_id,
+                        action="send_verification_email",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details=f"Failed to send verification email: {str(e)}",
+                    )
                 )
                 raise UserError("Failed to send verification email")
 
@@ -551,7 +554,6 @@ class UserService:
             Always returns silently to prevent email enumeration
         """
         try:
-            # Try to get unverified user by email
             try:
                 user = await self._user_repo.get_by_email(email.lower())
                 if user.is_verified:
@@ -559,13 +561,11 @@ class UserService:
             except NotFoundError:
                 return
 
-            # Generate new verification code
             verification_code = token_hex(settings.VERIFICATION_CODE_LENGTH)
             verification_expires = datetime.now(UTC) + timedelta(
                 seconds=settings.VERIFICATION_CODE_TTL_SECS,
             )
 
-            # Update user with new verification code
             await self._user_repo.update(
                 user.id,
                 {
@@ -574,18 +574,17 @@ class UserService:
                 },
             )
 
-            # Log resend attempt
-            await self._audit_repo.create(
-                {
-                    "user_id": user.id,
-                    "action": "resend_verification_public",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": "Verification email resent",
-                }
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=user.id,
+                    action="resend_verification_public",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details="Verification email resent",
+                )
             )
 
-            # Send verification email
             try:
                 await email_service.send_verification_email(
                     to_email=user.email,
@@ -593,16 +592,243 @@ class UserService:
                 )
             except EmailError as e:
                 logger.error("Failed to send verification email: %s", str(e))
-                await self._audit_repo.create(
-                    {
-                        "user_id": user.id,
-                        "action": "send_verification_email",
-                        "ip_address": get_client_ip(request),
-                        "user_agent": request.headers.get("user-agent", ""),
-                        "details": f"Failed to send verification email: {str(e)}",
-                    }
+                audit_service = AuditService(self._audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=user.id,
+                        action="send_verification_email",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details=f"Failed to send verification email: {str(e)}",
+                    )
                 )
 
         except Exception as e:
             logger.error("Public verification resend failed: %s", str(e))
-            # Return silently to prevent email enumeration
+
+    async def list_users_by_role(
+        self,
+        role: UserRole,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> list[User]:
+        """List users with specific role.
+
+        Args:
+            role: Role to filter by
+            skip: Number of records to skip
+            limit: Maximum number of records to return
+
+        Returns:
+            List of users with the role
+        """
+        return await self._user_repo.get_all_by_role(role, offset=skip, limit=limit)
+
+    async def list_users(self, skip: int = 0, limit: int = 100) -> list[User]:
+        """List all users with pagination.
+
+        Args:
+            skip: Number of records to skip
+            limit: Maximum number of records to return
+
+        Returns:
+            List of users
+        """
+        return await self._user_repo.get_all(offset=skip, limit=limit)
+
+    async def get_user(self, user_id: UUID) -> User:
+        """Get specific user details.
+
+        Args:
+            user_id: User ID to get
+
+        Returns:
+            User details
+
+        Raises:
+            NotFoundError: If user not found
+        """
+        return await self._user_repo.get_by_id(user_id)
+
+    async def admin_update_user(
+        self,
+        request: Request,
+        user_id: UUID,
+        user_data: UserUpdate,
+        admin_user: User,
+    ) -> User:
+        """Update user as admin.
+
+        Args:
+            request: FastAPI request
+            user_id: User ID to update
+            user_data: User update data
+            admin_user: Admin user performing the update
+
+        Returns:
+            Updated user
+
+        Raises:
+            NotFoundError: If user not found
+            UserError: If update fails
+        """
+        try:
+            user = await self._user_repo.get_by_id(user_id)
+
+            update_data = user_data.model_dump(exclude_unset=True)
+            password_updated = False
+
+            if "password" in update_data:
+                update_data["password_hash"] = get_password_hash(
+                    update_data.pop("password")
+                )
+                password_updated = True
+
+            updated_user = await self._user_repo.update(user_id, update_data)
+
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=admin_user.id,
+                    action="admin_update_user",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"Updated user {user.email}",
+                )
+            )
+
+            if password_updated:
+                await token_service.revoke_all_user_tokens(user_id.hex)
+
+            return updated_user
+
+        except Exception as e:
+            logger.error("Admin user update failed: %s", str(e))
+            raise UserError("Failed to update user")
+
+    async def admin_delete_user(
+        self,
+        request: Request,
+        user_id: UUID,
+        admin_user: User,
+    ) -> None:
+        """Delete user as admin.
+
+        Args:
+            request: FastAPI request
+            user_id: User ID to delete
+            admin_user: Admin user performing the deletion
+
+        Raises:
+            NotFoundError: If user not found
+            UserError: If deletion fails
+        """
+        user = await self._user_repo.get_by_id(user_id)
+        user_email = user.email
+
+        await self._user_repo.delete(user_id)
+
+        audit_service = AuditService(self._audit_repo)
+        await audit_service.create_log(
+            AuditLogCreate(
+                user_id=admin_user.id,
+                action="delete_user",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details=f"Deleted user {user_email}",
+            )
+        )
+
+    async def update_user_role(
+        self,
+        request: Request,
+        user_id: UUID,
+        role: UserRole,
+        admin_user: User,
+    ) -> User:
+        """Update user role as admin.
+
+        Args:
+            request: FastAPI request
+            user_id: User ID to update
+            role: New role to assign
+            admin_user: Admin user performing the update
+
+        Returns:
+            Updated user
+
+        Raises:
+            NotFoundError: If user not found
+            UserError: If role update fails
+        """
+        user = await self._user_repo.get_by_id(user_id)
+
+        updated_user = await self._user_repo.update(user_id, {"role": role})
+
+        audit_service = AuditService(self._audit_repo)
+        await audit_service.create_log(
+            AuditLogCreate(
+                user_id=admin_user.id,
+                action="update_role",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details=f"Updated role for user {user.email} to {role.value}",
+            )
+        )
+
+        return updated_user
+
+    async def remove_user_role(
+        self,
+        request: Request,
+        user_id: UUID,
+        role: UserRole,
+        admin_user: User,
+    ) -> User:
+        """Remove role from user as admin.
+
+        Args:
+            request: FastAPI request
+            user_id: User ID to update
+            role: Role to remove
+            admin_user: Admin user performing the update
+
+        Returns:
+            Updated user
+
+        Raises:
+            NotFoundError: If user not found
+            UserError: If role removal fails
+        """
+        user = await self._user_repo.get_by_id(user_id)
+
+        if role == UserRole.USER:
+            return user
+
+        if user.role == role:
+            updated_user = await self._user_repo.update(
+                user_id, {"role": UserRole.USER}
+            )
+
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=admin_user.id,
+                    action="remove_role",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"Removed role {role} from user {user.email}",
+                )
+            )
+
+            return updated_user
+
+        return user
+
+    async def list_roles(self) -> list[str]:
+        """List all available user roles.
+
+        Returns:
+            List of role values
+        """
+        return [role.value for role in UserRole]
