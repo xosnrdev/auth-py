@@ -96,6 +96,8 @@ class AuditLogRepository(BaseRepository[AuditLog]):
         self,
         ip_address: str,
         *,
+        action: str | None = None,
+        since: datetime | None = None,
         offset: int = 0,
         limit: int = DEFAULT_LOGS_PER_PAGE,
     ) -> list[AuditLog]:
@@ -103,6 +105,8 @@ class AuditLogRepository(BaseRepository[AuditLog]):
 
         Args:
             ip_address: IP address
+            action: Optional action type to filter by
+            since: Optional datetime to filter logs since
             offset: Number of logs to skip
             limit: Maximum number of logs to return
 
@@ -115,13 +119,14 @@ class AuditLogRepository(BaseRepository[AuditLog]):
             f"Limit must be between 1 and {MAX_LOGS_PER_PAGE}"
         )
 
-        query = (
-            select(AuditLog)
-            .where(AuditLog.ip_address == ip_address)
-            .order_by(AuditLog.timestamp.desc())
-            .offset(offset)
-            .limit(limit)
-        )
+        query = select(AuditLog).where(AuditLog.ip_address == ip_address)
+        if action:
+            query = query.where(AuditLog.action == action)
+        if since:
+            assert since.tzinfo is not None, "Datetime must be timezone-aware"
+            query = query.where(AuditLog.timestamp >= since)
+        query = query.order_by(AuditLog.timestamp.desc()).offset(offset).limit(limit)
+
         result = await self._session.execute(query)
         return list(result.scalars().all())
 
