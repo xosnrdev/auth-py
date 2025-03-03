@@ -1,39 +1,38 @@
-"""Password hashing and verification with bcrypt."""
+"""Password hashing and verification with Argon2."""
 
 from typing import Final
 
-from bcrypt import checkpw as _checkpw
-from bcrypt import gensalt as _gensalt
-from bcrypt import hashpw as _hashpw
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerifyMismatchError
 
 ENCODING: Final[str] = "utf-8"
-WORK_FACTOR: Final[int] = 12
-MAX_PASSWORD_BYTES: Final[int] = 72
+MAX_PASSWORD_BYTES: Final[int] = 1024
+
+_hasher = PasswordHasher(
+    time_cost=3,
+    memory_cost=65536,
+    parallelism=4,
+    hash_len=32,
+    salt_len=16,
+)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash using constant-time comparison."""
     try:
-        password_bytes = plain_password.encode(ENCODING)
-        hash_bytes = hashed_password.encode(ENCODING)
-
-        return _checkpw(password_bytes, hash_bytes)
-    except (TypeError, ValueError):
+        return _hasher.verify(hashed_password, plain_password)
+    except (VerifyMismatchError, InvalidHash):
         return False
 
 
 def get_password_hash(password: str) -> str:
-    """Generate a secure bcrypt hash with salt."""
+    """Generate a secure Argon2id hash with salt."""
     try:
-        password_bytes = password.encode(ENCODING)
-        if len(password_bytes) > MAX_PASSWORD_BYTES:
+        if len(password.encode(ENCODING)) > MAX_PASSWORD_BYTES:
             raise ValueError(
                 f"Password exceeds {MAX_PASSWORD_BYTES} bytes when encoded"
             )
 
-        salt = _gensalt(rounds=WORK_FACTOR)
-        hash_bytes = _hashpw(password_bytes, salt)
-
-        return hash_bytes.decode(ENCODING)
-    except (TypeError, ValueError) as e:
+        return _hasher.hash(password)
+    except Exception as e:
         raise ValueError(f"Password hashing failed: {str(e)}") from e
