@@ -113,6 +113,15 @@ async def refresh_token(
     try:
         auth_service = AuthService(user_repo, audit_repo, token_repo)
         return await auth_service.refresh_token(request, token, response)
+    except RateLimitError as e:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(e),
+            headers={
+                "WWW-Authenticate": "Bearer",
+                "Retry-After": str(settings.RATE_LIMIT_WINDOW_SECS),
+            },
+        )
     except AuthError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

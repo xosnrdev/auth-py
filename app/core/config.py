@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: PositiveInt = 10
     RATE_LIMIT_WINDOW_SECS: PositiveInt = 60
     MAX_LOGIN_ATTEMPTS: PositiveInt = 5
+    MAX_REFRESH_TOKEN_ATTEMPTS: PositiveInt = 5
 
     # Database settings
     DATABASE_URI: PostgresDsn

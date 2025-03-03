@@ -43,18 +43,56 @@ class TokenRepository:
                     found_keys = await redis_client.keys(pattern)
                     matching_keys.extend(found_keys)
                 else:
-                    matching_keys.append(pattern.encode())
+                    matching_keys.append(
+                        pattern.encode() if isinstance(pattern, str) else pattern
+                    )
 
             # Try each potential key
             for key in matching_keys:
-                result = await cast(Any, redis_client.hgetall(key.decode()))
+                key_str = key.decode() if isinstance(key, bytes) else key
+                result = await cast(Any, redis_client.hgetall(key_str))
                 if result:
-                    data: dict[bytes, bytes] = cast(dict[bytes, bytes], result)
-                    return TokenMetadata(
-                        user_id=data[b"user_id"].decode(),
-                        user_agent=data[b"user_agent"].decode(),
-                        ip_address=data[b"ip_address"].decode(),
-                    )
+                    try:
+                        # Handle both byte and string keys in the result
+                        user_id_key = b"user_id" if b"user_id" in result else "user_id"
+                        user_agent_key = (
+                            b"user_agent" if b"user_agent" in result else "user_agent"
+                        )
+                        ip_address_key = (
+                            b"ip_address" if b"ip_address" in result else "ip_address"
+                        )
+
+                        user_id = result[user_id_key]
+                        user_agent = result[user_agent_key]
+                        ip_address = result[ip_address_key]
+
+                        # Decode if bytes
+                        user_id = (
+                            user_id.decode() if isinstance(user_id, bytes) else user_id
+                        )
+                        user_agent = (
+                            user_agent.decode()
+                            if isinstance(user_agent, bytes)
+                            else user_agent
+                        )
+                        ip_address = (
+                            ip_address.decode()
+                            if isinstance(ip_address, bytes)
+                            else ip_address
+                        )
+
+                        return TokenMetadata(
+                            user_id=user_id,
+                            user_agent=user_agent,
+                            ip_address=ip_address,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed to process token metadata: %s, data: %s",
+                            str(e),
+                            result,
+                        )
+                        continue
 
             return None
         except Exception as e:
@@ -121,10 +159,29 @@ class TokenRepository:
         Args:
             token_id: Token ID to delete
         """
-        key = f"{TOKEN_PREFIX}{token_id}"
+        # Try both old and new key formats
+        keys = [
+            f"{TOKEN_PREFIX}{token_id}",  # Old format
+            f"{TOKEN_PREFIX}user:*:{token_id}",  # New format
+        ]
+
         redis_client = Redis(connection_pool=redis.connection_pool)
         try:
-            await redis_client.delete(key)
+            # For new format, we need to find the actual key first
+            matching_keys = []
+            for pattern in keys:
+                if "*" in pattern:
+                    found_keys = await redis_client.keys(pattern)
+                    matching_keys.extend(found_keys)
+                else:
+                    matching_keys.append(
+                        pattern.encode() if isinstance(pattern, str) else pattern
+                    )
+
+            # Delete each matching key
+            for key in matching_keys:
+                key_str = key.decode() if isinstance(key, bytes) else key
+                await redis_client.delete(key_str)
         except Exception as e:
             logger.error("Failed to delete token: %s", str(e))
 
