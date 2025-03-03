@@ -6,17 +6,19 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 
+from app.core.config import settings
 from app.core.dependencies import (
     AuditRepo,
     CurrentUser,
     Token,
+    TokenRepo,
     UserRepo,
     bearer_scheme,
 )
-from app.core.errors import AuthError
+from app.core.errors import AuthError, RateLimitError
 from app.schemas import PasswordResetRequest, PasswordResetVerify
+from app.schemas.token import TokenResponse
 from app.services import AuthService
-from app.services.token import TokenResponse
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     user_repo: UserRepo,
     audit_repo: AuditRepo,
+    token_repo: TokenRepo,
 ) -> TokenResponse:
     """Authenticate user with email/password following OAuth2 password grant.
 
@@ -39,6 +42,7 @@ async def login(
         form_data: OAuth2 password form data
         user_repo: User repository
         audit_repo: Audit log repository
+        token_repo: Token repository
 
     Returns:
         Token response with access and refresh tokens
@@ -47,8 +51,17 @@ async def login(
         HTTPException: If authentication fails
     """
     try:
-        auth_service = AuthService(user_repo, audit_repo)
+        auth_service = AuthService(user_repo, audit_repo, token_repo)
         return await auth_service.login(request, form_data, response)
+    except RateLimitError as e:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(e),
+            headers={
+                "WWW-Authenticate": "Bearer",
+                "Retry-After": str(settings.RATE_LIMIT_WINDOW_SECS),
+            },
+        )
     except AuthError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -63,6 +76,7 @@ async def refresh_token(
     response: Response,
     user_repo: UserRepo,
     audit_repo: AuditRepo,
+    token_repo: TokenRepo,
 ) -> TokenResponse:
     """Refresh access token using refresh token following OAuth2 refresh grant.
 
@@ -71,6 +85,7 @@ async def refresh_token(
         response: FastAPI response
         user_repo: User repository
         audit_repo: Audit log repository
+        token_repo: Token repository
 
     Returns:
         Token response with new access and refresh tokens
@@ -78,7 +93,6 @@ async def refresh_token(
     Raises:
         HTTPException: If token refresh fails
     """
-    # Get refresh token from request
     token = None
     body_data = (
         await request.json()
@@ -97,7 +111,7 @@ async def refresh_token(
         )
 
     try:
-        auth_service = AuthService(user_repo, audit_repo)
+        auth_service = AuthService(user_repo, audit_repo, token_repo)
         return await auth_service.refresh_token(request, token, response)
     except AuthError as e:
         raise HTTPException(
@@ -114,6 +128,7 @@ async def logout(
     current_user: CurrentUser,
     audit_repo: AuditRepo,
     user_repo: UserRepo,
+    token_repo: TokenRepo,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> None:
     """Logout user and revoke current session following RFC 7009.
@@ -124,13 +139,14 @@ async def logout(
         current_user: Current authenticated user
         audit_repo: Audit log repository
         user_repo: User repository
+        token_repo: Token repository
         credentials: Bearer token credentials from authorization header
 
     Raises:
         HTTPException: If logout fails
     """
     try:
-        auth_service = AuthService(user_repo, audit_repo)
+        auth_service = AuthService(user_repo, audit_repo, token_repo)
         await auth_service.logout(
             request, response, current_user, credentials.credentials
         )
@@ -150,7 +166,7 @@ async def introspect_token(
     return {
         "sub": current_user.id.hex,
         "email": current_user.email,
-        "roles": current_user.roles,
+        "role": current_user.role.value,
     }
 
 
@@ -160,6 +176,7 @@ async def request_password_reset(
     reset_request: PasswordResetRequest,
     user_repo: UserRepo,
     audit_repo: AuditRepo,
+    token_repo: TokenRepo,
 ) -> dict[str, str]:
     """Request a password reset.
 
@@ -168,6 +185,7 @@ async def request_password_reset(
         reset_request: Password reset request data
         user_repo: User repository
         audit_repo: Audit log repository
+        token_repo: Token repository
 
     Returns:
         Success message
@@ -176,7 +194,7 @@ async def request_password_reset(
         HTTPException: If request fails
     """
     try:
-        auth_service = AuthService(user_repo, audit_repo)
+        auth_service = AuthService(user_repo, audit_repo, token_repo)
         await auth_service.request_password_reset(request, reset_request.email)
         return {"message": "Password reset email sent"}
     except AuthError as e:
@@ -189,17 +207,19 @@ async def request_password_reset(
 @router.post("/password-reset/verify")
 async def verify_password_reset(
     request: Request,
-    reset_verify: PasswordResetVerify,
+    reset_data: PasswordResetVerify,
     user_repo: UserRepo,
     audit_repo: AuditRepo,
+    token_repo: TokenRepo,
 ) -> dict[str, str]:
     """Verify password reset token and set new password.
 
     Args:
         request: FastAPI request
-        reset_verify: Password reset verification data
+        reset_data: Password reset verification data
         user_repo: User repository
         audit_repo: Audit log repository
+        token_repo: Token repository
 
     Returns:
         Success message
@@ -208,12 +228,8 @@ async def verify_password_reset(
         HTTPException: If verification fails
     """
     try:
-        auth_service = AuthService(user_repo, audit_repo)
-        await auth_service.verify_password_reset(
-            request=request,
-            token=reset_verify.token,
-            new_password=reset_verify.password,
-        )
+        auth_service = AuthService(user_repo, audit_repo, token_repo)
+        await auth_service.verify_password_reset(request, reset_data)
         return {"message": "Password reset successful"}
     except AuthError as e:
         raise HTTPException(
