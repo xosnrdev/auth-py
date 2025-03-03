@@ -3,8 +3,6 @@
 from app.schemas.audit import AuditLogBase, AuditLogCreate, AuditLogResponse
 from app.schemas.base import BaseSchema
 from app.schemas.token import (
-    TokenIntrospectionResponse,
-    TokenMetadataResponse,
     TokenResponse,
 )
 from app.schemas.user import (
@@ -14,6 +12,7 @@ from app.schemas.user import (
     UserBase,
     UserCreate,
     UserResponse,
+    UserRoleUpdate,
     UserUpdate,
 )
 
@@ -25,6 +24,7 @@ __all__ = [
     "UserCreate",
     "UserUpdate",
     "UserResponse",
+    "UserRoleUpdate",
     "PasswordResetRequest",
     "PasswordResetVerify",
     # Audit
@@ -32,8 +32,7 @@ __all__ = [
     "AuditLogCreate",
     "AuditLogResponse",
     # Token
-    "TokenIntrospectionResponse",
-    "TokenMetadataResponse",
     "TokenResponse",
+    # Email
     "EmailRequest",
 ]

@@ -31,7 +31,7 @@ async def list_audit_logs(
 
     Args:
         audit_repo: Audit log repository
-        _: Current authenticated user (unused)
+        _: Current authenticated user
         user_id: Filter by user ID
         action: Filter by action type
         start_date: Filter by start date
@@ -74,7 +74,7 @@ async def get_audit_log(
     Args:
         log_id: Audit log ID to get
         audit_repo: Audit log repository
-        _: Current authenticated user (unused)
+        _: Current authenticated user
 
     Returns:
         Audit log entry

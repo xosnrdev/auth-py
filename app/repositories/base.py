@@ -57,6 +57,7 @@ class BaseRepository(Generic[ModelType]):
             instance = self._model(**data)
             self._session.add(instance)
             await self._session.flush()
+            await self._session.commit()
             return instance
 
         except IntegrityError as e:
@@ -210,6 +211,11 @@ class BaseRepository(Generic[ModelType]):
 
         Args:
             filters: Optional dictionary of filters
+                Special suffixes:
+                - _gt: Greater than
+                - _lt: Less than
+                - _gte: Greater than or equal
+                - _lte: Less than or equal
 
         Returns:
             Number of records
@@ -222,10 +228,21 @@ class BaseRepository(Generic[ModelType]):
 
             if filters:
                 for key, value in filters.items():
+                    # Handle special comparison operators
                     if key.endswith("_gt"):
                         field = key[:-3]  # Remove _gt suffix
                         query = query.where(getattr(self._model, field) > value)
+                    elif key.endswith("_lt"):
+                        field = key[:-3]  # Remove _lt suffix
+                        query = query.where(getattr(self._model, field) < value)
+                    elif key.endswith("_gte"):
+                        field = key[:-4]  # Remove _gte suffix
+                        query = query.where(getattr(self._model, field) >= value)
+                    elif key.endswith("_lte"):
+                        field = key[:-4]  # Remove _lte suffix
+                        query = query.where(getattr(self._model, field) <= value)
                     else:
+                        # Handle exact matches
                         query = query.where(getattr(self._model, key) == value)
 
             result = await self._session.execute(query)

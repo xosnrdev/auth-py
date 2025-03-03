@@ -1,16 +1,19 @@
 """SQLAlchemy base model with UUID and timestamps."""
 
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import TypedDict
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, text
+from sqlalchemy import DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-UUID_LENGTH: Final[int] = 32
-TIMESTAMP_FORMAT: Final[str] = 'YYYY-MM-DD"T"HH24:MI:SS.US"TZ"'
-PG_UUID_FUNCTION: Final[str] = "gen_random_uuid()"
-PG_TIMESTAMP_FUNCTION: Final[str] = "CURRENT_TIMESTAMP"
+
+class BaseModelDict(TypedDict):
+    """Base model serialized form."""
+
+    id: str
+    created_at: str
+    updated_at: str
 
 
 class Base(DeclarativeBase):
@@ -19,32 +22,28 @@ class Base(DeclarativeBase):
     id: Mapped[UUID] = mapped_column(
         primary_key=True,
         default=uuid4,
-        server_default=text(PG_UUID_FUNCTION),
+        server_default=func.gen_random_uuid(),
+        comment="Primary key ID",
     )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=text(PG_TIMESTAMP_FUNCTION),
+        server_default=func.now(),
+        comment="Created at timestamp",
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=text(PG_TIMESTAMP_FUNCTION),
-        onupdate=text(PG_TIMESTAMP_FUNCTION),
+        server_default=func.now(),
+        onupdate=func.now(),
+        comment="Updated at timestamp",
     )
 
-    def dict(self) -> dict[str, Any]:
+    def dict(self) -> BaseModelDict:
         """Convert model to dict with hex UUIDs."""
-        result: dict[str, Any] = {}
-        for column in self.__table__.columns:
-            value = getattr(self, column.name)
-            if isinstance(value, UUID):
-                assert len(value.hex) == UUID_LENGTH, "Invalid UUID length"
-                result[column.name] = value.hex
-            elif isinstance(value, datetime):
-                assert value.tzinfo is not None, "Timestamp must be timezone-aware"
-                result[column.name] = value.astimezone(UTC).isoformat()
-            else:
-                result[column.name] = value
-        return result
+        return BaseModelDict(
+            id=self.id.hex,
+            created_at=self.created_at.astimezone(UTC).isoformat(),
+            updated_at=self.updated_at.astimezone(UTC).isoformat(),
+        )

@@ -1,45 +1,42 @@
-"""Authentication utilities and decorators."""
+"""Core authentication utilities."""
 
 from collections.abc import Awaitable, Callable
-from enum import Enum, auto
 from functools import wraps
 from typing import ParamSpec, TypeVar
 
 from fastapi import HTTPException, status
 
-from app.models import User
+from app.models.user import User, UserRole
 
 P = ParamSpec("P")
 T = TypeVar("T")
 
 
-class RequireMode(Enum):
-    """Role requirement mode."""
-
-    ANY = auto()
-    ALL = auto()
-
-
-def check_roles(
-    required_roles: list[str],
-    *,
-    mode: RequireMode = RequireMode.ANY,
+def check_role(
+    required_role: UserRole,
 ) -> Callable[[Callable[P, Awaitable[T]]], Callable[P, Awaitable[T]]]:
-    """Check if user has required roles.
+    """Check if user has required role or higher.
 
     Args:
-        required_roles: List of required roles
-        mode: Role requirement mode (ANY or ALL)
+        required_role: Minimum required role level
 
     Returns:
-        Decorator function
+        Decorator that checks role
     """
 
-    def decorator(
-        func: Callable[P, Awaitable[T]],
-    ) -> Callable[P, Awaitable[T]]:
+    def decorator(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+        """Decorator that checks role.
+
+        Args:
+            func: Function to decorate
+
+        Returns:
+            Decorated function
+        """
+
         @wraps(func)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+            """Check role and call the function."""
             # Get current user from kwargs
             current_user = None
             for value in kwargs.values():
@@ -53,13 +50,13 @@ def check_roles(
                     detail="Authentication required",
                 )
 
-            # Check roles
-            if mode == RequireMode.ALL:
-                has_roles = all(role in current_user.roles for role in required_roles)
-            else:
-                has_roles = any(role in current_user.roles for role in required_roles)
+            if not current_user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Inactive user",
+                )
 
-            if not has_roles:
+            if not current_user.role.has_permission(required_role):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Insufficient permissions",
@@ -72,5 +69,6 @@ def check_roles(
     return decorator
 
 
-requires_admin = check_roles(["admin"])
-requires_super_admin = check_roles(["super_admin"])
+requires_admin = check_role(UserRole.ADMIN)
+requires_moderator = check_role(UserRole.MODERATOR)
+requires_user = check_role(UserRole.USER)

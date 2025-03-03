@@ -8,10 +8,12 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.dependencies.database import AuditRepo, UserRepo
+from app.core.dependencies.token import TokenRepo, get_token_service
 from app.core.errors import NotFoundError
 from app.models import User
+from app.schemas.audit import AuditLogCreate
+from app.schemas.token import TokenType
 from app.services import AuditService
-from app.services.token import TokenType, token_service
 from app.utils.request import get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,7 @@ async def get_current_user(
     request: Request,
     user_repo: UserRepo,
     audit_repo: AuditRepo,
+    token_repo: TokenRepo,
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> User:
     """Authenticate and return the current user.
@@ -40,6 +43,7 @@ async def get_current_user(
         request: FastAPI request
         user_repo: User repository
         audit_repo: Audit log repository
+        token_repo: Token repository
         credentials: Bearer token credentials
 
     Returns:
@@ -52,6 +56,9 @@ async def get_current_user(
     assert len(token) <= MAX_TOKEN_LENGTH, "Token exceeds maximum length"
 
     try:
+        # Get token service
+        token_service = await get_token_service(token_repo)
+
         # Verify token
         token_data = await token_service.verify_token(token, TokenType.ACCESS)
         assert token_data.sub, "Token missing subject claim"
@@ -73,13 +80,16 @@ async def get_current_user(
                 detail="User account is inactive",
             )
 
-        # Log authentication using AuditService
+        # Log authentication
         audit_service = AuditService(audit_repo)
         await audit_service.create_log(
-            request=request,
-            user_id=user.id,
-            action="authenticate",
-            details="Token authentication successful",
+            AuditLogCreate(
+                user_id=user.id,
+                action="authenticate",
+                ip_address=get_client_ip(request),
+                user_agent=request.headers.get("user-agent", ""),
+                details="Token authentication successful",
+            )
         )
 
         return user
