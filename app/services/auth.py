@@ -56,11 +56,7 @@ class AuthService:
         self._audit_repo = audit_repo
         self._token_service = TokenService(token_repo)
 
-    async def _check_ip_rate_limit(
-        self,
-        request: Request,
-        email: str | None = None,
-    ) -> None:
+    async def _check_ip_rate_limit(self, request: Request) -> None:
         """Check if IP address has exceeded failed login attempts.
 
         Args:
@@ -70,15 +66,6 @@ class AuthService:
         Raises:
             RateLimitError: If too many failed attempts from IP
         """
-        # Check if user is admin/moderator
-        if email:
-            try:
-                user = await self._user_repo.get_by_email(email.lower())
-                if user.role in (UserRole.ADMIN, UserRole.MODERATOR):
-                    return
-            except NotFoundError:
-                pass
-
         # Get client IP
         ip_address = get_client_ip(request)
 
@@ -144,7 +131,7 @@ class AuthService:
                     raise AuthError("Email not verified")
 
                 # Check IP rate limit only after user-specific checks
-                await self._check_ip_rate_limit(request, form_data.username)
+                await self._check_ip_rate_limit(request)
 
                 # Reset failed login attempts on successful login
                 await self._user_repo.reset_failed_login(user.id)
