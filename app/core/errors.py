@@ -207,6 +207,10 @@ class AuthError(Exception):
     """Raised when authentication fails."""
 
 
+class RateLimitError(Exception):
+    """Raised when rate limit is exceeded."""
+
+
 class UserError(Exception):
     """Error raised when user operations fail."""
 
