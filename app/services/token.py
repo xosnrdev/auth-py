@@ -149,6 +149,7 @@ class TokenService:
                 algorithms=[ALGORITHM],
             )
             token_data = TokenPayload(**payload)
+            # logger.info("Token data: %s", token_data)
 
             if token_data.type != token_type:
                 raise ValueError("Invalid token type")
@@ -162,12 +163,14 @@ class TokenService:
 
             if token_type == TokenType.REFRESH:
                 metadata = await self._token_repo.get_token_metadata(token_data.jti)
+                # logger.info("Token metadata: %s", metadata)
                 if not metadata:
                     raise ValueError("Token revoked")
 
             return token_data
 
         except (JWTError, ValueError) as e:
+            logger.error("Token verification failed: %s", str(e))
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid token: {str(e)}",
@@ -194,6 +197,7 @@ class TokenService:
             b"user_agent": user_agent.encode(),
             b"ip_address": ip_address.encode(),
         }
+        # logger.info("Storing token metadata with key: %s", key)
         await self._token_repo.store_token_metadata(
             token_id=token_id,
             metadata=metadata,
@@ -210,15 +214,18 @@ class TokenService:
                 algorithms=[ALGORITHM],
             )
             token_data = TokenPayload(**payload)
+            # logger.info("Revoking token: %s", token_data.jti)
 
             if token_data.type == TokenType.ACCESS:
                 # Blacklist access token until expiration
                 expires_in = int((token_data.exp - datetime.now(UTC)).total_seconds())
                 if expires_in > 0:
+                    # logger.info("Blacklisting access token: %s", token_data.jti)
                     await self._token_repo.blacklist_token(token_data.jti, expires_in)
 
             elif token_data.type == TokenType.REFRESH:
                 # Delete refresh token metadata
+                # logger.info("Deleting refresh token metadata: %s", token_data.jti)
                 await self._token_repo.delete_token(token_data.jti)
 
         except (JWTError, ValueError) as e:
@@ -249,12 +256,3 @@ class TokenService:
 
 
 token_service = TokenService(TokenRepository())
-
-__all__ = [
-    "TokenPayload",
-    "TokenResponse",
-    "TokenService",
-    "TokenType",
-    "TokenCreate",
-    "token_service",
-]

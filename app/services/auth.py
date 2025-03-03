@@ -56,30 +56,37 @@ class AuthService:
         self._audit_repo = audit_repo
         self._token_service = TokenService(token_repo)
 
-    async def _check_ip_rate_limit(self, request: Request) -> None:
-        """Check if IP address has exceeded failed login attempts.
+    async def _check_rate_limit(
+        self,
+        request: Request,
+        action: str,
+        max_attempts: int,
+        error_message: str | None = None,
+    ) -> None:
+        """Check if IP address has exceeded rate limit for a specific action.
 
         Args:
             request: FastAPI request
-            email: Optional email to check for admin/moderator roles
+            action: The action to check rate limit for (e.g. 'login_failed', 'refresh_token_failed')
+            max_attempts: Maximum number of attempts allowed
+            error_message: Optional custom error message. If not provided, a default one is used.
 
         Raises:
             RateLimitError: If too many failed attempts from IP
         """
-        # Get client IP
         ip_address = get_client_ip(request)
 
         # Get recent failed attempts from this IP
         audit_service = AuditService(self._audit_repo)
         failed_attempts = await self._audit_repo.get_by_ip_address(
             ip_address=ip_address,
-            action="login_failed",
+            action=action,
             since=datetime.now(UTC)
             - timedelta(seconds=settings.RATE_LIMIT_WINDOW_SECS),
         )
 
         # Check if IP has exceeded limit
-        if len(failed_attempts) >= settings.MAX_LOGIN_ATTEMPTS:
+        if len(failed_attempts) >= max_attempts:
             # Log IP blocked
             await audit_service.create_log(
                 AuditLogCreate(
@@ -87,12 +94,43 @@ class AuthService:
                     action="ip_blocked",
                     ip_address=ip_address,
                     user_agent=request.headers.get("user-agent", ""),
-                    details=f"IP address blocked due to {settings.MAX_LOGIN_ATTEMPTS} failed login attempts",
+                    details=f"IP address blocked due to {max_attempts} failed {action.replace('_', ' ')}s",
                 )
             )
-            raise RateLimitError(
-                f"Too many failed login attempts from this IP. Try again in {settings.RATE_LIMIT_WINDOW_SECS // 60} minutes."
-            )
+            if error_message is None:
+                error_message = f"Too many failed attempts. Try again in {settings.RATE_LIMIT_WINDOW_SECS // 60} minutes."
+            raise RateLimitError(error_message)
+
+    async def _check_ip_rate_limit(self, request: Request) -> None:
+        """Check if IP address has exceeded failed login attempts.
+
+        Args:
+            request: FastAPI request
+
+        Raises:
+            RateLimitError: If too many failed attempts from IP
+        """
+        await self._check_rate_limit(
+            request=request,
+            action="login_failed",
+            max_attempts=settings.MAX_LOGIN_ATTEMPTS,
+            error_message=f"Too many failed login attempts from this IP. Try again in {settings.RATE_LIMIT_WINDOW_SECS // 60} minutes.",
+        )
+
+    async def _check_refresh_token_rate_limit(self, request: Request) -> None:
+        """Check if IP address has exceeded refresh token attempts.
+
+        Args:
+            request: FastAPI request
+
+        Raises:
+            RateLimitError: If too many failed attempts from IP
+        """
+        await self._check_rate_limit(
+            request=request,
+            action="refresh_token_failed",
+            max_attempts=settings.RATE_LIMIT_REQUESTS,
+        )
 
     async def login(
         self,
@@ -227,8 +265,12 @@ class AuthService:
 
         Raises:
             AuthError: If token refresh fails
+            RateLimitError: If too many failed attempts
         """
         try:
+            # Check rate limit before processing
+            await self._check_refresh_token_rate_limit(request)
+
             # Verify refresh token
             token_data = await self._token_service.verify_token(
                 refresh_token, TokenType.REFRESH
@@ -253,10 +295,7 @@ class AuthService:
                     response=None if is_api_client else response,
                 )
 
-                # Revoke old token
-                await self._token_service.revoke_token(refresh_token)
-
-                # Log token refresh
+                # Log successful token refresh
                 audit_service = AuditService(self._audit_repo)
                 await audit_service.create_log(
                     AuditLogCreate(
@@ -270,21 +309,51 @@ class AuthService:
 
                 # For web clients
                 if tokens is None:
-                    return TokenResponse(
+                    result = TokenResponse(
                         access_token=cast(str, request.session.get("access_token")),
                         refresh_token=None,
                         token_type="bearer",
                         expires_in=settings.JWT_ACCESS_TOKEN_TTL_SECS,
                     )
+                else:
+                    # For API clients
+                    result = tokens
 
-                # For API clients
-                return tokens
+                # Revoke old token after creating the response
+                await self._token_service.revoke_token(refresh_token)
+
+                return result
 
             except NotFoundError:
+                # Log failed refresh attempt
+                audit_service = AuditService(self._audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        user_id=None,
+                        action="refresh_token_failed",
+                        ip_address=get_client_ip(request),
+                        user_agent=request.headers.get("user-agent", ""),
+                        details="Failed refresh token attempt - User not found",
+                    )
+                )
                 await self._token_service.revoke_token(refresh_token)
                 raise AuthError("User not found or inactive")
 
+        except RateLimitError:
+            raise
+
         except Exception as e:
+            # Log failed refresh attempt
+            audit_service = AuditService(self._audit_repo)
+            await audit_service.create_log(
+                AuditLogCreate(
+                    user_id=None,
+                    action="refresh_token_failed",
+                    ip_address=get_client_ip(request),
+                    user_agent=request.headers.get("user-agent", ""),
+                    details=f"Failed refresh token attempt - {str(e)}",
+                )
+            )
             logger.error("Token refresh failed: %s", str(e))
             raise AuthError(str(e))
 
