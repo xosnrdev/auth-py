@@ -4,12 +4,14 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any, Protocol
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from app.core.middleware.context import client_ip_ctx, request_id_ctx, user_agent_ctx
+from app.schemas.audit import AuditLogCreate
+from app.services.audit import AuditService
 
 logger = logging.getLogger(__name__)
 
@@ -121,13 +123,22 @@ class AuditMiddleware(BaseHTTPMiddleware):
             )
 
             if audit_repo is not None and hasattr(audit_repo, "create"):
-                await audit_repo.create(
-                    {
-                        "action": f"{method} {path}",
-                        "details": json.dumps(audit_data),
-                        "ip_address": client_ip,
-                        "user_agent": user_agent,
-                    }
+                # Get user ID if available
+                user_id = None
+                if hasattr(request.state, "user"):
+                    user = request.state.user
+                    if hasattr(user, "id") and isinstance(user.id, UUID):
+                        user_id = user.id
+
+                audit_service = AuditService(audit_repo)
+                await audit_service.create_log(
+                    AuditLogCreate(
+                        action=f"{method} {path}",
+                        details=json.dumps(audit_data),
+                        ip_address=client_ip,
+                        user_agent=user_agent,
+                        user_id=user_id,
+                    )
                 )
             else:
                 logger.debug("Audit log: %s", json.dumps(audit_data))
