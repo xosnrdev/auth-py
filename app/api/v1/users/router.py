@@ -8,6 +8,10 @@ from app.core.dependencies import AuditRepo, CurrentUser, UserRepo
 from app.core.errors import DuplicateError, UserError
 from app.models import User
 from app.schemas import EmailRequest, UserCreate, UserResponse, UserUpdate
+from app.schemas.user import (
+    EmailChangeVerify,
+    EmailVerificationRequest,
+)
 from app.services import UserService
 
 logger = logging.getLogger(__name__)
@@ -56,7 +60,7 @@ async def register(
 @router.post("/verify-email")
 async def verify_email(
     request: Request,
-    code: str,
+    verification_data: EmailVerificationRequest,
     user_repo: UserRepo,
     audit_repo: AuditRepo,
 ) -> dict[str, str]:
@@ -64,7 +68,7 @@ async def verify_email(
 
     Args:
         request: FastAPI request
-        code: Verification code
+        verification_data: Email verification data
         user_repo: User repository
         audit_repo: Audit log repository
 
@@ -76,7 +80,7 @@ async def verify_email(
     """
     try:
         user_service = UserService(user_repo, audit_repo)
-        await user_service.verify_email(request, code)
+        await user_service.verify_email(request, verification_data.code)
         return {"message": "Email verified successfully"}
     except UserError as e:
         raise HTTPException(
@@ -276,7 +280,7 @@ async def request_email_change(
 @router.post("/me/email/verify", response_model=UserResponse)
 async def verify_email_change(
     request: Request,
-    code: str,
+    verification_data: EmailChangeVerify,
     current_user: CurrentUser,
     user_repo: UserRepo,
     audit_repo: AuditRepo,
@@ -285,7 +289,7 @@ async def verify_email_change(
 
     Args:
         request: FastAPI request
-        code: Verification code
+        verification_data: Email change verification data
         current_user: Current authenticated user
         user_repo: User repository
         audit_repo: Audit log repository
@@ -298,7 +302,9 @@ async def verify_email_change(
     """
     try:
         user_service = UserService(user_repo, audit_repo)
-        return await user_service.verify_email_change(request, current_user.id, code)
+        return await user_service.verify_email_change(
+            request, current_user.id, verification_data.code
+        )
     except DuplicateError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
