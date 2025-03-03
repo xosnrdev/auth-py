@@ -5,13 +5,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.core.auth import requires_admin, requires_super_admin
+from app.core.auth import requires_admin
 from app.core.dependencies import AuditRepo, CurrentUser, UserRepo
 from app.core.errors import NotFoundError
-from app.core.security import get_password_hash
-from app.models import User
-from app.schemas import UserResponse, UserUpdate
-from app.utils.request import get_client_ip
+from app.models.user import User, UserRole
+from app.schemas.user import UserResponse, UserRoleUpdate, UserUpdate
+from app.services import UserService
 
 logger = logging.getLogger(__name__)
 
@@ -26,34 +25,51 @@ async def list_roles(
     """List available roles.
 
     Args:
-        _: Current authenticated user (unused)
+        _: Current authenticated user
 
     Returns:
         List of available roles
     """
-    return ["user", "admin", "super_admin"]
+    return [role.value for role in UserRole]
 
 
 @router.get("", response_model=list[UserResponse])
 @requires_admin
 async def list_users(
     user_repo: UserRepo,
+    audit_repo: AuditRepo,
     _: CurrentUser,
     skip: int = 0,
-    limit: int = 100,
+    limit: int = 20,
+    role: UserRole | None = None,
 ) -> list[User]:
-    """List all users with pagination.
+    """List users with optional role filter.
 
     Args:
         user_repo: User repository
-        _: Current authenticated user (unused)
-        skip: Number of records to skip
-        limit: Maximum number of records to return
+        audit_repo: Audit repository
+        _: Current authenticated user
+        skip: Number of users to skip
+        limit: Maximum number of users to return
+        role: Optional role to filter by
 
     Returns:
         List of users
+
+    Raises:
+        HTTPException: If listing fails
     """
-    return await user_repo.get_all(offset=skip, limit=limit)
+    try:
+        user_service = UserService(user_repo, audit_repo)
+        if role:
+            return await user_service.list_users_by_role(role, skip=skip, limit=limit)
+        return await user_service.list_users(skip=skip, limit=limit)
+    except Exception as e:
+        logger.error("User listing failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to list users",
+        )
 
 
 @router.get("/{user_id}", response_model=UserResponse)
@@ -61,14 +77,16 @@ async def list_users(
 async def get_user(
     user_id: UUID,
     user_repo: UserRepo,
+    audit_repo: AuditRepo,
     _: CurrentUser,
 ) -> User:
-    """Get specific user details.
+    """Get user by ID.
 
     Args:
         user_id: User ID to get
         user_repo: User repository
-        _: Current authenticated user (unused)
+        audit_repo: Audit repository
+        _: Current authenticated user
 
     Returns:
         User details
@@ -77,20 +95,27 @@ async def get_user(
         HTTPException: If user not found
     """
     try:
-        return await user_repo.get_by_id(user_id)
+        user_service = UserService(user_repo, audit_repo)
+        return await user_service.get_user(user_id)
     except NotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
+    except Exception as e:
+        logger.error("User retrieval failed: %s", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to get user",
+        )
 
 
-@router.patch("/{user_id}", response_model=UserResponse)
+@router.put("/{user_id}", response_model=UserResponse)
 @requires_admin
 async def update_user(
     request: Request,
     user_id: UUID,
-    user_update: UserUpdate,
+    user_data: UserUpdate,
     user_repo: UserRepo,
     audit_repo: AuditRepo,
     current_user: CurrentUser,
@@ -100,9 +125,9 @@ async def update_user(
     Args:
         request: FastAPI request
         user_id: User ID to update
-        user_update: User update data
+        user_data: User update data
         user_repo: User repository
-        audit_repo: Audit log repository
+        audit_repo: Audit repository
         current_user: Current authenticated user
 
     Returns:
@@ -112,41 +137,13 @@ async def update_user(
         HTTPException: If user not found or update fails
     """
     try:
-        # Get user first to ensure they exist
-        user = await user_repo.get_by_id(user_id)
-
-        # Prepare update data
-        update_data = user_update.model_dump(exclude_unset=True)
-        if "password" in update_data:
-            update_data["password_hash"] = get_password_hash(
-                update_data.pop("password")
-            )
-
-        # Handle verification status
-        if user_update.is_verified:
-            update_data.update(
-                {
-                    "verification_code": None,
-                    "verification_code_expires_at": None,
-                }
-            )
-
-        # Update user
-        user = await user_repo.update(user_id, update_data)
-
-        # Log update
-        await audit_repo.create(
-            {
-                "user_id": current_user.id,
-                "action": "update_user",
-                "ip_address": get_client_ip(request),
-                "user_agent": request.headers.get("user-agent", ""),
-                "details": f"Updated user {user.email}",
-            }
+        user_service = UserService(user_repo, audit_repo)
+        return await user_service.admin_update_user(
+            request=request,
+            user_id=user_id,
+            user_data=user_data,
+            admin_user=current_user,
         )
-
-        return user
-
     except NotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -160,7 +157,9 @@ async def update_user(
         )
 
 
-@router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{user_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None
+)
 @requires_admin
 async def delete_user(
     request: Request,
@@ -175,30 +174,19 @@ async def delete_user(
         request: FastAPI request
         user_id: User ID to delete
         user_repo: User repository
-        audit_repo: Audit log repository
+        audit_repo: Audit repository
         current_user: Current authenticated user
 
     Raises:
         HTTPException: If user not found or deletion fails
     """
     try:
-        # Get user first to ensure they exist and get email for audit log
-        user = await user_repo.get_by_id(user_id)
-
-        # Log deletion first in case user deletion fails
-        await audit_repo.create(
-            {
-                "user_id": current_user.id,
-                "action": "delete_user",
-                "ip_address": get_client_ip(request),
-                "user_agent": request.headers.get("user-agent", ""),
-                "details": f"Deleted user {user.email}",
-            }
+        user_service = UserService(user_repo, audit_repo)
+        await user_service.admin_delete_user(
+            request=request,
+            user_id=user_id,
+            admin_user=current_user,
         )
-
-        # Delete user
-        await user_repo.delete(user_id)
-
     except NotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -212,69 +200,55 @@ async def delete_user(
         )
 
 
-@router.post("/{user_id}/roles/{role}", status_code=status.HTTP_200_OK)
-@requires_super_admin
-async def add_role(
+@router.put("/{user_id}/role", response_model=UserResponse)
+@requires_admin
+async def update_role(
     request: Request,
     user_id: UUID,
-    role: str,
+    role_update: UserRoleUpdate,
     user_repo: UserRepo,
     audit_repo: AuditRepo,
     current_user: CurrentUser,
-) -> dict[str, list[str]]:
-    """Add role to user.
+) -> User:
+    """Update user role.
 
     Args:
         request: FastAPI request
         user_id: User ID to update
-        role: Role to add
+        role_update: Role update data
         user_repo: User repository
-        audit_repo: Audit log repository
+        audit_repo: Audit repository
         current_user: Current authenticated user
 
     Returns:
-        Updated roles list
+        Updated user
 
     Raises:
         HTTPException: If user not found or role update fails
     """
     try:
-        # Get user first to ensure they exist
-        user = await user_repo.get_by_id(user_id)
-
-        # Add role if not present
-        if role not in user.roles:
-            roles = user.roles + [role]
-            user = await user_repo.update(user_id, {"roles": roles})
-
-            # Log role addition
-            await audit_repo.create(
-                {
-                    "user_id": current_user.id,
-                    "action": "add_role",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": f"Added role {role} to user {user.email}",
-                }
-            )
-
-        return {"roles": user.roles}
-
+        user_service = UserService(user_repo, audit_repo)
+        return await user_service.update_user_role(
+            request=request,
+            user_id=user_id,
+            role=role_update.role,
+            admin_user=current_user,
+        )
     except NotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
     except Exception as e:
-        logger.error("Role addition failed: %s", str(e))
+        logger.error("Role update failed: %s", str(e))
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to add role",
+            detail="Failed to update role",
         )
 
 
-@router.delete("/{user_id}/roles/{role}", status_code=status.HTTP_200_OK)
-@requires_super_admin
+@router.delete("/{user_id}/role/{role}", response_model=UserResponse)
+@requires_admin
 async def remove_role(
     request: Request,
     user_id: UUID,
@@ -282,7 +256,7 @@ async def remove_role(
     user_repo: UserRepo,
     audit_repo: AuditRepo,
     current_user: CurrentUser,
-) -> dict[str, list[str]]:
+) -> User:
     """Remove role from user.
 
     Args:
@@ -290,37 +264,32 @@ async def remove_role(
         user_id: User ID to update
         role: Role to remove
         user_repo: User repository
-        audit_repo: Audit log repository
+        audit_repo: Audit repository
         current_user: Current authenticated user
 
     Returns:
-        Updated roles list
+        Updated user
 
     Raises:
-        HTTPException: If user not found or role update fails
+        HTTPException: If user not found or role removal fails
     """
     try:
-        # Get user first to ensure they exist
-        user = await user_repo.get_by_id(user_id)
-
-        # Remove role if present and not 'user'
-        if role in user.roles and role != "user":
-            roles = [r for r in user.roles if r != role]
-            user = await user_repo.update(user_id, {"roles": roles})
-
-            # Log role removal
-            await audit_repo.create(
-                {
-                    "user_id": current_user.id,
-                    "action": "remove_role",
-                    "ip_address": get_client_ip(request),
-                    "user_agent": request.headers.get("user-agent", ""),
-                    "details": f"Removed role {role} from user {user.email}",
-                }
+        # Validate role
+        try:
+            role_enum = UserRole(role)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid role: {role}",
             )
 
-        return {"roles": user.roles}
-
+        user_service = UserService(user_repo, audit_repo)
+        return await user_service.remove_user_role(
+            request=request,
+            user_id=user_id,
+            role=role_enum,
+            admin_user=current_user,
+        )
     except NotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
